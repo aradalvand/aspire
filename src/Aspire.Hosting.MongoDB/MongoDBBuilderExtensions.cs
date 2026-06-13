@@ -278,6 +278,7 @@ public static class MongoDBBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrEmpty(name);
 
+        builder.Resource.ReplicaSetName = name;
         return builder.WithArgs("--replSet", name);
     }
 
