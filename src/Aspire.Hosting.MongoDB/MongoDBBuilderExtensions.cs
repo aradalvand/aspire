@@ -66,16 +66,6 @@ public static class MongoDBBuilderExtensions
 
         string? connectionString = null;
 
-        builder.Eventing.Subscribe<ConnectionStringAvailableEvent>(mongoDBContainer, async (@event, ct) =>
-        {
-            connectionString = await mongoDBContainer.ConnectionStringExpression.GetValueAsync(ct).ConfigureAwait(false);
-
-            if (connectionString == null)
-            {
-                throw new DistributedApplicationException($"ConnectionStringAvailableEvent was published for the '{mongoDBContainer.Name}' resource but the connection string was null.");
-            }
-        });
-
         var healthCheckKey = $"{name}_check";
         // cache the client so it is reused on subsequent calls to the health check
         IMongoClient? client = null;
@@ -94,6 +84,11 @@ public static class MongoDBBuilderExtensions
             {
                 context.EnvironmentVariables[UserEnvVarName] = mongoDBContainer.UserNameReference;
                 context.EnvironmentVariables[PasswordEnvVarName] = mongoDBContainer.PasswordParameter!;
+            })
+            .OnConnectionStringAvailable(async (@event, r, ct) =>
+            {
+                connectionString = await mongoDBContainer.ConnectionStringExpression.GetValueAsync(ct).ConfigureAwait(false)
+                    ?? throw new DistributedApplicationException($"ConnectionStringAvailableEvent was published for the '{mongoDBContainer.Name}' resource but the connection string was null.");
             })
             .WithHealthCheck(healthCheckKey);
     }
@@ -166,14 +161,15 @@ public static class MongoDBBuilderExtensions
         containerName ??= $"{builder.Resource.Name}-mongoexpress";
 
         var mongoExpressContainer = new MongoExpressContainerResource(containerName);
-        var resourceBuilder = builder.ApplicationBuilder.AddResource(mongoExpressContainer)
-                                                        .WithImage(MongoDBContainerImageTags.MongoExpressImage, MongoDBContainerImageTags.MongoExpressTag)
-                                                        .WithImageRegistry(MongoDBContainerImageTags.MongoExpressRegistry)
-                                                        .WithIconName("WindowDatabase")
-                                                        .WithEnvironment(context => ConfigureMongoExpressContainer(context, builder.Resource))
-                                                        .WithHttpEndpoint(targetPort: 8081, name: "http")
-                                                        .WithParentRelationship(builder)
-                                                        .ExcludeFromManifest();
+        var resourceBuilder = builder.ApplicationBuilder
+            .AddResource(mongoExpressContainer)
+            .WithImage(MongoDBContainerImageTags.MongoExpressImage, MongoDBContainerImageTags.MongoExpressTag)
+            .WithImageRegistry(MongoDBContainerImageTags.MongoExpressRegistry)
+            .WithIconName("WindowDatabase")
+            .WithEnvironment(context => ConfigureMongoExpressContainer(context, builder.Resource))
+            .WithHttpEndpoint(targetPort: 8081, name: "http")
+            .WithParentRelationship(builder)
+            .ExcludeFromManifest();
 
         configureContainer?.Invoke(resourceBuilder);
 
@@ -351,16 +347,14 @@ public static class MongoDBBuilderExtensions
                 MongoDBTlsMode.RequireTls => "requireTLS",
                 _ => throw new ArgumentOutOfRangeException(nameof(mode), $"Unsupported TLS mode: {mode}"),
             })
-            .WithArgs("--tlsAllowConnectionsWithoutCertificates") // NOTE: This allows clients to connect without having to provide the certificate again.
-            .WithCertificateTrustConfiguration(ctx =>
+            .WithArgs("--tlsAllowConnectionsWithoutCertificates") // NOTE: This allows clients to connect without having to provide the certificate+key and the CA from their end (that's called mutual TLS and is unnecessary).
+            .WithCertificateTrustConfiguration(async ctx =>
             {
                 ctx.Arguments.Add("--tlsCAFile");
                 ctx.Arguments.Add(ctx.CertificateBundlePath);
                 builder.Resource.TlsCaFilePath = ctx.CertificateBundlePath;
-
-                return Task.CompletedTask;
             })
-            .WithHttpsCertificateConfiguration(ctx =>
+            .WithHttpsCertificateConfiguration(async ctx =>
             {
                 ctx.Arguments.Add("--tlsCertificateKeyFile");
                 ctx.Arguments.Add(ctx.CertificateWithKeyPath);
@@ -370,8 +364,6 @@ public static class MongoDBBuilderExtensions
                     ctx.Arguments.Add("--tlsCertificateKeyFilePassword"); // NOTE: See https://www.mongodb.com/docs/manual/tutorial/configure-ssl/#tls-ssl-certificate-passphrase
                     ctx.Arguments.Add(ctx.Password);
                 }
-
-                return Task.CompletedTask;
             });
     }
 
