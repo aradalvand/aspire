@@ -67,12 +67,11 @@ public static class MongoDBBuilderExtensions
         string? connectionString = null;
 
         var healthCheckKey = $"{name}_check";
-        // cache the client so it is reused on subsequent calls to the health check
-        IMongoClient? client = null;
         builder.Services.AddHealthChecks()
             .AddMongoDb(
-                sp => client ??= new MongoClient(connectionString ?? throw new InvalidOperationException("Connection string is unavailable")),
-                name: healthCheckKey);
+                name: healthCheckKey,
+                clientFactory: sp => new MongoClient(connectionString ?? throw new InvalidOperationException("Connection string is unavailable"))
+            );
 
         return builder
             .AddResource(mongoDBContainer)

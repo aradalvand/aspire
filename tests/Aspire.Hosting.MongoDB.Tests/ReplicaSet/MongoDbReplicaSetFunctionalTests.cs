@@ -95,6 +95,8 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
             await CreateTestDataWithReplicaSetFeaturesAsync(db, cts.Token);
         }, cts.Token);
 
+        await Task.Delay(10_000);
+
         await app.StopAsync();
     }
 
