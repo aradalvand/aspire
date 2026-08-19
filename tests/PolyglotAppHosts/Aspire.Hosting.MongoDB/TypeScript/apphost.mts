@@ -51,22 +51,21 @@ await mongoChained.addDatabase("analytics-db", { databaseName: "analytics" });
 await builder.addMongoDB("mongo-bind-all")
     .withBindIpAll();
 
-// Test 12: Test withReplicaSet with TLS and KeyFile
+// Test 12: Test withReplicaSet with KeyFile and TLS configuration
 const keyFileParam = await builder.addParameter("rs-keyfile", { secret: true, value: "my-secret-key" });
 await builder.addMongoDB("mongo-rs-member")
     .withReplicaSet("rs0")
     .withKeyFile(keyFileParam, { keyFilePath: "/etc/rs.key" })
-    .withTls();
+    .withTlsMode()
+    .withTlsAllowInvalidCertificates();
 
 // Test 13: Test AddMongoDBReplicaSet with WithMember
 const rsKeyFileParam = await builder.addParameter("rs-shared-key", { secret: true, value: "replica-set-key" });
 const mongo1 = await builder.addMongoDB("mongo-rs-1")
-    .withKeyFile(rsKeyFileParam, { keyFilePath: "/etc/rs.key" })
-    .withTls();
+    .withKeyFile(rsKeyFileParam, { keyFilePath: "/etc/rs.key" });
 
 const mongo2 = await builder.addMongoDB("mongo-rs-2")
-    .withKeyFile(rsKeyFileParam, { keyFilePath: "/etc/rs.key" })
-    .withTls();
+    .withKeyFile(rsKeyFileParam, { keyFilePath: "/etc/rs.key" });
 
 const replicaSet = await builder.addMongoDBReplicaSet("rs0")
     .withMember(mongo1)
