@@ -173,6 +173,22 @@ public static class MongoDBReplicaSetBuilderExtensions
                             ).ConfigureAwait(false);
 
                             var version = currentConfig["config"]["version"].AsInt32;
+                            var currentMembers = currentConfig["config"]["members"].AsBsonArray;
+
+                            // NOTE: A forced reconfiguration that both drops a member and moves the remaining members' split
+                            // horizons — which is what restarting the app host does, since the host ports are reassigned —
+                            // leaves the surviving members unable to pick the new configuration up from each other, so the
+                            // replica set never elects a primary again. Rather than reconfiguring a persisted set into that
+                            // state, the removal is refused and the set is left on its current configuration.
+                            var removedHosts = currentMembers
+                                .OfType<BsonDocument>()
+                                .Select(m => m["host"].AsString)
+                                .Except(memberHosts.Select(m => m.Internal), StringComparer.OrdinalIgnoreCase)
+                                .ToList();
+                            if (removedHosts.Count > 0)
+                            {
+                                throw new DistributedApplicationException($"Cannot remove {string.Join(", ", removedHosts.Select(h => $"'{h}'"))} from the existing MongoDB replica set '{rsResource.Name}': removing members from a replica set that has already been initialized is not supported yet. Add the member(s) back, or start over from an empty replica set by removing the data volumes of its members.");
+                            }
 
                             logger.LogInformation("Re-configuring MongoDB replica set resource '{ResourceName}' — last version {Version}", resource.Name, version);
                             await admin.RunCommandAsync<BsonDocument>(
@@ -182,7 +198,7 @@ public static class MongoDBReplicaSetBuilderExtensions
                                     {
                                         ["_id"] = rsResource.Name,
                                         ["version"] = version + 1,
-                                        ["members"] = BuildMembersConfiguration(memberHosts, currentConfig["config"]["members"].AsBsonArray),
+                                        ["members"] = BuildMembersConfiguration(memberHosts, currentMembers),
                                     },
                                     ["force"] = true,
                                 },
@@ -206,7 +222,7 @@ public static class MongoDBReplicaSetBuilderExtensions
 
                             try
                             {
-                                // NOTE: We perform the initialization in two steps, first with a single member and then with the full configuration, the reason for this is to avoid the `election
+                                // NOTE: The initialization is performed in two steps, first with a single member and then with the full configuration. `replSetInitiate` runs a quorum check against every host in the configuration it is handed and only returns once an election has succeeded, so initiating with the full member list makes success depend on every other member already being reachable. Initiating with only the initial primary elects it immediately, and the remaining members are then added by a reconfiguration, which does not have to wait on them.
                                 await admin.RunCommandAsync<BsonDocument>(new BsonDocument
                                 {
                                     ["replSetInitiate"] = new BsonDocument
@@ -288,6 +304,17 @@ public static class MongoDBReplicaSetBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(member);
+
+        // NOTE: A MongoDB server can only belong to one replica set, and can only appear in it once. Without this check the
+        // member would silently accumulate a second set of `--replSet`, key file and bind arguments, or contribute a
+        // duplicate host to the replica set configuration, and the failure would only surface when the container starts.
+        if (member.Resource.ReplicaSetName is { } existingReplicaSetName)
+        {
+            throw new InvalidOperationException(
+                string.Equals(existingReplicaSetName, builder.Resource.Name, StringComparisons.ResourceName)
+                    ? $"The MongoDB server resource '{member.Resource.Name}' has already been added as a member of the replica set '{builder.Resource.Name}'."
+                    : $"The MongoDB server resource '{member.Resource.Name}' is already a member of the replica set '{existingReplicaSetName}' and cannot also be a member of '{builder.Resource.Name}'.");
+        }
 
         member
             .WithReplicaSet(builder.Resource.Name)

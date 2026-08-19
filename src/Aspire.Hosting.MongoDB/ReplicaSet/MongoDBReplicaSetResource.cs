@@ -24,7 +24,7 @@ public sealed class MongoDBReplicaSetResource(
     /// <summary>
     /// Gets the parameter that contains the content of the key file used for internal authentication between members of the MongoDB replica set.
     /// </summary>
-    public ParameterResource SharedKeyFileParameter => keyFile;
+    public ParameterResource SharedKeyFileParameter { get; } = keyFile ?? throw new ArgumentNullException(nameof(keyFile));
 
     /// <summary>
     /// Gets the parameter that contains the username for authenticating to the MongoDB replica set.
@@ -32,7 +32,7 @@ public sealed class MongoDBReplicaSetResource(
     /// <remarks>
     /// This will be the same across all members of the replica set, and is used in conjunction with <see cref="SharedPasswordParameter"/> for authentication.
     /// </remarks>
-    public ParameterResource? SharedUserNameParameter => sharedUserName;
+    public ParameterResource? SharedUserNameParameter { get; } = sharedUserName;
 
     /// <summary>
     /// Gets the parameter that contains the password for authenticating to the MongoDB replica set.
@@ -40,7 +40,7 @@ public sealed class MongoDBReplicaSetResource(
     /// <remarks>
     /// This will be the same across all members of the replica set, and is used in conjunction with <see cref="SharedUserNameParameter"/> for authentication.
     /// </remarks>
-    public ParameterResource SharedPasswordParameter => sharedPassword;
+    public ParameterResource SharedPasswordParameter { get; } = sharedPassword ?? throw new ArgumentNullException(nameof(sharedPassword));
 
     /// <summary>
     /// Gets a reference to the username for the MongoDB replica set.
@@ -51,7 +51,7 @@ public sealed class MongoDBReplicaSetResource(
             : ReferenceExpression.Create($"{SharedUserNameParameter}");
 
     /// <summary>
-    /// Gets the parameter that contains the content of the key file used for internal authentication between members of the MongoDB replica set.
+    /// Gets the MongoDB server resources that are members of this replica set, in the order they were added.
     /// </summary>
     public IEnumerable<MongoDBServerResource> Members => Annotations.OfType<MongoReplicaSetMemberAnnotation>().Select(a => a.Member);
 
@@ -102,5 +102,18 @@ public sealed class MongoDBReplicaSetResource(
             disabledValue: ReferenceExpression.Empty)}");
 
         return builder.Build();
+    }
+
+    IEnumerable<KeyValuePair<string, ReferenceExpression>> IResourceWithConnectionString.GetConnectionProperties()
+    {
+        // NOTE: Unlike a single MongoDB server, a replica set has no one host and port to expose: clients are expected to
+        // discover the members through the seed list in the connection string, so only the credentials, the replica set
+        // name and the full URI are exposed here.
+        yield return new("Username", SharedUserNameReference);
+        yield return new("Password", ReferenceExpression.Create($"{SharedPasswordParameter}"));
+        yield return new("AuthenticationDatabase", ReferenceExpression.Create($"{MongoDBServerResource.DefaultAuthenticationDatabase}"));
+        yield return new("AuthenticationMechanism", ReferenceExpression.Create($"{MongoDBServerResource.DefaultAuthenticationMechanism}"));
+        yield return new("ReplicaSetName", ReferenceExpression.Create($"{Name}"));
+        yield return new("Uri", ConnectionStringExpression);
     }
 }

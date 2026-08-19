@@ -138,7 +138,8 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
     /// Removing a member is deliberately not covered here: the id mapping itself handles it (see
     /// <c>BuildMembersConfigurationPreservesIdsOfExistingMembersWhenAMemberIsRemoved</c>), but a forced reconfiguration
     /// that both drops a member and moves the remaining members' split horizons leaves the surviving members unable to
-    /// pick up the new configuration from each other, so the set never elects a primary again.
+    /// pick up the new configuration from each other, so the set would never elect a primary again. Until that is
+    /// supported, removals against an initialized replica set are refused outright with an explanatory error.
     /// </para>
     /// </remarks>
     public enum TopologyChange
@@ -299,6 +300,12 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
 
     private static async Task CreateTestDataWithReplicaSetFeaturesAsync(IMongoDatabase mongoDatabase, CancellationToken ct)
     {
+        // NOTE: This runs inside a resilience pipeline, so it has to be able to start over. Dropping the collections first
+        // makes the whole helper idempotent; otherwise a transient failure part-way through would turn every subsequent
+        // attempt into a `NamespaceExists` failure on collection creation, or duplicate the inserted documents.
+        await mongoDatabase.DropCollectionAsync(CollectionNameA, cancellationToken: ct);
+        await mongoDatabase.DropCollectionAsync(CollectionNameB, cancellationToken: ct);
+
         await mongoDatabase.CreateCollectionAsync(CollectionNameA, cancellationToken: ct);
         await mongoDatabase.CreateCollectionAsync(CollectionNameB, cancellationToken: ct);
 
@@ -306,7 +313,7 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
         var directorsCollection = mongoDatabase.GetCollection<Director>(CollectionNameB);
 
         // NOTE: Watch streams and transactions in MongoDB only work within replica sets; so if we successfully use both the aforementioned features, it is effectively verified that the replica set is functional.
-        var directorsWatchCursor = await directorsCollection.WatchAsync(cancellationToken: ct);
+        using var directorsWatchCursor = await directorsCollection.WatchAsync(cancellationToken: ct);
         using var session = await mongoDatabase.Client.StartSessionAsync(cancellationToken: ct);
         session.StartTransaction();
 
@@ -323,11 +330,17 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
             item => Assert.Contains("The Dark Knight", item.Name),
             item => Assert.Contains("Schindler's List", item.Name));
 
-        await foreach (var item in directorsWatchCursor.ToAsyncEnumerable())
+        // NOTE: The cursor is advanced directly rather than through `ToAsyncEnumerable()`, whose adapter does not carry a
+        // cancellation token, so that missing the change event fails the test on its own timeout instead of hanging.
+        // NOTE: A change stream cursor yields empty batches while it waits, so an empty `Current` is not the end of it.
+        while (await directorsWatchCursor.MoveNextAsync(ct))
         {
-            // NOTE: We only assert the first item
-            Assert.Contains("Quentin Tarantino", item.FullDocument.Name);
-            break;
+            if (directorsWatchCursor.Current.FirstOrDefault() is { } change)
+            {
+                // NOTE: We only assert the first item
+                Assert.Contains("Quentin Tarantino", change.FullDocument.Name);
+                break;
+            }
         }
     }
 }

@@ -196,6 +196,67 @@ public class AddMongoDBReplicaSetTests(ITestOutputHelper testOutputHelper)
     }
 
     [Fact]
+    public void WithMemberThrowsWhenTheSameMemberIsAddedTwice()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var mongo1 = builder.AddMongoDB("mongo1");
+        var rs = builder.AddMongoDBReplicaSet("rs0").WithMember(mongo1);
+
+        var action = () => rs.WithMember(mongo1);
+
+        var exception = Assert.Throws<InvalidOperationException>(action);
+        Assert.Contains("already been added as a member", exception.Message);
+    }
+
+    [Fact]
+    public void WithMemberThrowsWhenTheMemberBelongsToAnotherReplicaSet()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var mongo1 = builder.AddMongoDB("mongo1");
+        builder.AddMongoDBReplicaSet("rs0").WithMember(mongo1);
+        var otherReplicaSet = builder.AddMongoDBReplicaSet("rs1");
+
+        var action = () => otherReplicaSet.WithMember(mongo1);
+
+        var exception = Assert.Throws<InvalidOperationException>(action);
+        Assert.Contains("already a member of the replica set 'rs0'", exception.Message);
+    }
+
+    [Fact]
+    public async Task ReplicaSetExposesConnectionProperties()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var mongo1 = builder.AddMongoDB("mongo1")
+            .WithEndpoint("tcp", e => e.AllocatedEndpoint = new AllocatedEndpoint(e, "localhost", 27017));
+        var rs = builder.AddMongoDBReplicaSet("rs0").WithMember(mongo1);
+
+        var properties = ((IResourceWithConnectionString)rs.Resource).GetConnectionProperties().ToArray();
+
+        Assert.Equal(
+            ["Username", "Password", "AuthenticationDatabase", "AuthenticationMechanism", "ReplicaSetName", "Uri"],
+            properties.Select(p => p.Key));
+        Assert.Equal("admin", await properties.Single(p => p.Key == "Username").Value.GetValueAsync(CancellationToken.None));
+        Assert.Equal("admin", await properties.Single(p => p.Key == "AuthenticationDatabase").Value.GetValueAsync(CancellationToken.None));
+        Assert.Equal("SCRAM-SHA-256", await properties.Single(p => p.Key == "AuthenticationMechanism").Value.GetValueAsync(CancellationToken.None));
+        Assert.Equal("rs0", await properties.Single(p => p.Key == "ReplicaSetName").Value.GetValueAsync(CancellationToken.None));
+
+        var uri = await properties.Single(p => p.Key == "Uri").Value.GetValueAsync(CancellationToken.None);
+        Assert.Equal(await rs.Resource.ConnectionStringExpression.GetValueAsync(CancellationToken.None), uri);
+    }
+
+    [Fact]
+    public void ReplicaSetResourceThrowsWhenRequiredParametersAreNull()
+    {
+        var keyFile = new ParameterResource("keyfile", _ => "key");
+        var password = new ParameterResource("password", _ => "pass");
+
+        Assert.Equal("keyFile", Assert.Throws<ArgumentNullException>(
+            () => new MongoDBReplicaSetResource("rs0", null!, null, password)).ParamName);
+        Assert.Equal("sharedPassword", Assert.Throws<ArgumentNullException>(
+            () => new MongoDBReplicaSetResource("rs0", keyFile, null, null!)).ParamName);
+    }
+
+    [Fact]
     public void BuildMembersConfigurationAllocatesSequentialIdsForANewReplicaSet()
     {
         var members = BuildMembers(("mongo1:27017", "localhost:27017"), ("mongo2:27017", "localhost:27018"));
