@@ -425,6 +425,29 @@ public class AddMongoDBTests(ITestOutputHelper testOutputHelper)
     }
 
     [Fact]
+    public async Task MongoDBDoesNotEnableTlsWhenTheDeveloperCertificateIsRequestedButUnavailable()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        builder.Services.AddSingleton<IDeveloperCertificateService>(new TestDeveloperCertificateService(
+            [], supportsContainerTrust: true, trustCertificate: true, tlsTerminate: false));
+
+        // NOTE: This is what `WithMember` does for replica set members. Enabling TLS without a certificate to back it
+        // would leave `mongod` with a `--tlsMode` it cannot satisfy, and it would refuse to start.
+        var mongo1 = builder.AddMongoDB("mongo1")
+            .WithHttpsDeveloperCertificate()
+            .WithEndpoint("tcp", e => e.AllocatedEndpoint = new AllocatedEndpoint(e, "localhost", 27017));
+
+        using var app = builder.Build();
+        var appModel = app.Services.GetRequiredService<DistributedApplicationModel>();
+        await builder.Eventing.PublishAsync(new BeforeStartEvent(app.Services, appModel));
+
+        Assert.False(mongo1.Resource.TlsEnabled);
+
+        var args = await ArgumentEvaluator.GetArgumentListAsync(mongo1.Resource);
+        Assert.DoesNotContain("--tlsMode", args);
+    }
+
+    [Fact]
     public async Task WithTlsModeUsesTheConfiguredMode()
     {
         using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);

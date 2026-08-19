@@ -126,8 +126,21 @@ public static class MongoDBBuilderExtensions
 
         if (builder.ExecutionContext.IsRunMode)
         {
-            mongoBuilder.SubscribeHttpsEndpointsUpdate(_ =>
+            mongoBuilder.SubscribeHttpsEndpointsUpdate(context =>
             {
+                // NOTE: This callback also fires when the resource has explicitly asked for the developer certificate
+                // (which is what `WithMember` does for replica set members) but no developer certificate exists on the
+                // machine. Turning TLS on then would hand `mongod` a `--tlsMode` that it has no certificate to satisfy
+                // and it would refuse to start, so the server is left serving plain TCP instead.
+                var certificateIsAvailable =
+                    (mongoServerResource.TryGetLastAnnotation<HttpsCertificateAnnotation>(out var certificateAnnotation) && certificateAnnotation.Certificate is not null)
+                    || !context.Services.GetRequiredService<IDeveloperCertificateService>().Certificates.IsEmpty;
+
+                if (!certificateIsAvailable)
+                {
+                    return;
+                }
+
                 // A certificate is available for this resource, so turn TLS on for the MongoDB endpoint. Marking the
                 // endpoint itself is what makes `MongoDBServerResource.TlsEnabled` — and therefore the `tls=true`
                 // segment of the connection string — light up.

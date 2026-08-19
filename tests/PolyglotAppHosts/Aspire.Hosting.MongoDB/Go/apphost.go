@@ -55,7 +55,7 @@ func main() {
 
 	// Test 12: Test WithReplicaSet with WithKeyFile, WithTlsMode and WithTlsAllowInvalidCertificates
 	keyFileParam := builder.AddParameter("rs-keyfile", &aspire.AddParameterOptions{Secret: aspire.BoolPtr(true), Value: aspire.StringPtr("my-secret-key")})
-	mongoRsMember := builder.AddMongoDB("mongo-rs-member").WithReplicaSet("rs0").WithKeyFile(keyFileParam, &aspire.WithKeyFileOptions{KeyFilePath: aspire.StringPtr("/etc/rs.key")}).WithTlsMode(nil).WithTlsAllowInvalidCertificates()
+	mongoRsMember := builder.AddMongoDB("mongo-rs-member").WithReplicaSet("rs0").WithKeyFile(keyFileParam, &aspire.WithKeyFileOptions{KeyFilePath: aspire.StringPtr("/etc/rs.key")}).WithTlsMode().WithTlsAllowInvalidCertificates()
 	if err = mongoRsMember.Err(); err != nil {
 		log.Fatalf(aspire.FormatError(err))
 	}
