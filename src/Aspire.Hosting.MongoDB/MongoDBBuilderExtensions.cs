@@ -79,7 +79,7 @@ public static class MongoDBBuilderExtensions
                 databaseNameFactory: _ => mongoServerResource.Databases.Values.FirstOrDefault(defaultValue: MongoDBServerResource.DefaultAuthenticationDatabase)
             );
 
-        return builder
+        var mongoBuilder = builder
             .AddResource(mongoServerResource)
             .WithEndpoint(port: port, targetPort: DefaultContainerPort, name: MongoDBServerResource.PrimaryEndpointName)
             .WithImage(MongoDBContainerImageTags.Image, MongoDBContainerImageTags.Tag)
@@ -95,7 +95,59 @@ public static class MongoDBBuilderExtensions
                 connectionString = await resource.ConnectionStringExpression.GetValueAsync(ct).ConfigureAwait(false)
                     ?? throw new DistributedApplicationException($"ConnectionStringAvailableEvent was published for the '{resource.Name}' resource but the connection string was null.");
             })
-            .WithHealthCheck(healthCheckKey);
+            .WithHealthCheck(healthCheckKey)
+            .WithCertificateTrustConfiguration(context =>
+            {
+                // NOTE: `mongod` refuses to start when it is handed TLS file arguments without TLS actually being turned on, so these are only added once the endpoint has been marked as TLS-enabled.
+                if (mongoServerResource.TlsEnabled)
+                {
+                    context.Arguments.Add("--tlsCAFile");
+                    context.Arguments.Add(context.CertificateBundlePath);
+                }
+
+                return Task.CompletedTask;
+            })
+            .WithHttpsCertificateConfiguration(context =>
+            {
+                if (mongoServerResource.TlsEnabled)
+                {
+                    context.Arguments.Add("--tlsCertificateKeyFile");
+                    context.Arguments.Add(context.CertificateWithKeyPath);
+
+                    if (context.Password is not null)
+                    {
+                        context.Arguments.Add("--tlsCertificateKeyFilePassword"); // NOTE: See https://www.mongodb.com/docs/manual/tutorial/configure-ssl/#tls-ssl-certificate-passphrase
+                        context.Arguments.Add(context.Password);
+                    }
+                }
+
+                return Task.CompletedTask;
+            });
+
+        if (builder.ExecutionContext.IsRunMode)
+        {
+            mongoBuilder.SubscribeHttpsEndpointsUpdate(_ =>
+            {
+                // A certificate is available for this resource, so turn TLS on for the MongoDB endpoint. Marking the
+                // endpoint itself is what makes `MongoDBServerResource.TlsEnabled` — and therefore the `tls=true`
+                // segment of the connection string — light up.
+                mongoBuilder
+                    .WithEndpoint(MongoDBServerResource.PrimaryEndpointName, endpoint => endpoint.TlsEnabled = true)
+                    .WithArgs(context =>
+                    {
+                        context.Args.Add("--tlsMode");
+                        context.Args.Add(GetTlsModeArgument(mongoServerResource.TlsMode));
+                        context.Args.Add("--tlsAllowConnectionsWithoutCertificates"); // NOTE: This allows clients to connect without having to provide the certificate+key and the CA from their end (that's called mutual TLS and is unnecessary).
+
+                        if (mongoServerResource.TlsAllowInvalidCertificates)
+                        {
+                            context.Args.Add("--tlsAllowInvalidCertificates");
+                        }
+                    });
+            });
+        }
+
+        return mongoBuilder;
     }
 
     /// <summary>
@@ -297,6 +349,7 @@ public static class MongoDBBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrEmpty(name);
+        ThrowIfPublishMode(builder.ApplicationBuilder, nameof(WithReplicaSet));
 
         builder.Resource.ReplicaSetName = name;
         return builder
@@ -322,6 +375,8 @@ public static class MongoDBBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(keyValue);
         ArgumentException.ThrowIfNullOrEmpty(keyFilePath);
+        // NOTE: The keyfile is a shared secret. Publishers materialize container files into the publish artifact (e.g. Docker Compose writes the contents straight into the generated YAML), which would leak it, so publishing is rejected outright until the keyfile can be published as a secret.
+        ThrowIfPublishMode(builder.ApplicationBuilder, nameof(WithKeyFile));
 
         return builder
             .WithAnnotation(new MongoDBServerKeyFileAnnotation(keyValue, keyFilePath))
@@ -341,47 +396,102 @@ public static class MongoDBBuilderExtensions
     }
 
     /// <summary>
-    /// Configures the MongoDB server to use TLS with the specified certificate and CA files.
+    /// Configures the <c>--tlsMode</c> the MongoDB server is started with when TLS is active.
     /// </summary>
     /// <remarks>
-    /// See https://www.mongodb.com/docs/manual/tutorial/configure-ssl/
+    /// <para>
+    /// TLS itself is not turned on by this method. A MongoDB server resource serves TLS whenever an HTTPS/TLS certificate
+    /// is available for it — by default the ASP.NET Core developer certificate — and serves plain TCP otherwise. Use
+    /// <see cref="ResourceBuilderExtensions.WithHttpsDeveloperCertificate{TResource}"/> or
+    /// <see cref="ResourceBuilderExtensions.WithHttpsCertificate{TResource}"/> to opt in explicitly, and
+    /// <see cref="ResourceBuilderExtensions.WithoutHttpsCertificate{TResource}"/> to opt out. This method only controls
+    /// how strict the server is about TLS on incoming connections once TLS is active; the default is
+    /// <see cref="MongoDBTlsMode.RequireTls"/>.
+    /// </para>
+    /// <para>
+    /// See https://www.mongodb.com/docs/manual/reference/configuration-options/#mongodb-setting-net.tls.mode
+    /// </para>
+    /// <example>
+    /// Let clients connect either with or without TLS:
+    /// <code lang="csharp">
+    /// var mongo = builder.AddMongoDB("mongo")
+    ///     .WithTlsMode(MongoDBTlsMode.PreferTls);
+    /// </code>
+    /// </example>
     /// </remarks>
+    /// <param name="builder">The MongoDB server resource builder.</param>
+    /// <param name="mode">The TLS mode to run the MongoDB server in.</param>
+    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
+    /// <ats-returns>The resource builder.</ats-returns>
     [AspireExport]
-    public static IResourceBuilder<MongoDBServerResource> WithTls(
+    public static IResourceBuilder<MongoDBServerResource> WithTlsMode(
         this IResourceBuilder<MongoDBServerResource> builder,
         MongoDBTlsMode mode = MongoDBTlsMode.RequireTls
     )
     {
         ArgumentNullException.ThrowIfNull(builder);
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), mode, $"Unsupported TLS mode: {mode}");
+        }
+        // NOTE: The certificate material is only made available to the container in run mode, so a published container configured for TLS would be started without a certificate and fail. Publishing is rejected until publish-time certificate support exists.
+        ThrowIfPublishMode(builder.ApplicationBuilder, nameof(WithTlsMode));
 
-        return builder
-            .WithAnnotation(new MongoDBServerTlsAnnotation(mode))
-            .WithArgs("--tlsMode", mode switch
-            {
-                MongoDBTlsMode.Disabled => "disabled",
-                MongoDBTlsMode.AllowTls => "allowTLS",
-                MongoDBTlsMode.PreferTls => "preferTLS",
-                MongoDBTlsMode.RequireTls => "requireTLS",
-                _ => throw new ArgumentOutOfRangeException(nameof(mode), $"Unsupported TLS mode: {mode}"),
-            })
-            .WithArgs("--tlsAllowConnectionsWithoutCertificates") // NOTE: This allows clients to connect without having to provide the certificate+key and the CA from their end (that's called mutual TLS and is unnecessary).
-            .WithArgs("--tlsAllowInvalidCertificates") // TODO: Could be removed and replaced with `--tlsClusterFile <file>` (along with the more restrictive `--tlsAllowInvalidHostnames`) once Aspire adds support for TLS certificates with EKUs of `clientAuth` — see https://discord.com/channels/1361488941836140614/1361488942813286403/1516575977256259735
-            .WithCertificateTrustConfiguration(async ctx =>
-            {
-                ctx.Arguments.Add("--tlsCAFile");
-                ctx.Arguments.Add(ctx.CertificateBundlePath);
-            })
-            .WithHttpsCertificateConfiguration(async ctx =>
-            {
-                ctx.Arguments.Add("--tlsCertificateKeyFile");
-                ctx.Arguments.Add(ctx.CertificateWithKeyPath);
+        return builder.WithAnnotation(new MongoDBServerTlsModeAnnotation(mode), ResourceAnnotationMutationBehavior.Replace);
+    }
 
-                if (ctx.Password is not null)
-                {
-                    ctx.Arguments.Add("--tlsCertificateKeyFilePassword"); // NOTE: See https://www.mongodb.com/docs/manual/tutorial/configure-ssl/#tls-ssl-certificate-passphrase
-                    ctx.Arguments.Add(ctx.Password);
-                }
-            });
+    /// <summary>
+    /// Configures the MongoDB server to accept TLS connections whose peer certificate cannot be validated, by passing
+    /// <c>--tlsAllowInvalidCertificates</c> to <c>mongod</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This weakens certificate authentication and should only be used when a peer legitimately cannot present a
+    /// certificate this server is able to validate. It is what
+    /// <see cref="MongoDBReplicaSetBuilderExtensions.WithMember(IResourceBuilder{MongoDBReplicaSetResource}, IResourceBuilder{MongoDBServerResource})"/>
+    /// uses today, because replica set members authenticate to each other with the same certificate they serve to clients
+    /// and that certificate does not carry a <c>clientAuth</c> extended key usage.
+    /// </para>
+    /// <para>
+    /// See https://www.mongodb.com/docs/manual/reference/program/mongod/#std-option-mongod.--tlsAllowInvalidCertificates
+    /// </para>
+    /// <example>
+    /// <code lang="csharp">
+    /// var mongo = builder.AddMongoDB("mongo")
+    ///     .WithTlsAllowInvalidCertificates();
+    /// </code>
+    /// </example>
+    /// </remarks>
+    /// <param name="builder">The MongoDB server resource builder.</param>
+    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
+    /// <ats-returns>The resource builder.</ats-returns>
+    [AspireExport]
+    public static IResourceBuilder<MongoDBServerResource> WithTlsAllowInvalidCertificates(this IResourceBuilder<MongoDBServerResource> builder)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ThrowIfPublishMode(builder.ApplicationBuilder, nameof(WithTlsAllowInvalidCertificates));
+
+        return builder.WithAnnotation(new MongoDBServerTlsAllowInvalidCertificatesAnnotation(), ResourceAnnotationMutationBehavior.Replace);
+    }
+
+    private static string GetTlsModeArgument(MongoDBTlsMode mode) => mode switch
+    {
+        MongoDBTlsMode.AllowTls => "allowTLS",
+        MongoDBTlsMode.PreferTls => "preferTLS",
+        MongoDBTlsMode.RequireTls => "requireTLS",
+        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, $"Unsupported TLS mode: {mode}"),
+    };
+
+    /// <summary>
+    /// Throws when the app host is running in publish mode, for the features of this integration that are only
+    /// implemented for local orchestration.
+    /// </summary>
+    internal static void ThrowIfPublishMode(IDistributedApplicationBuilder builder, string feature)
+    {
+        if (builder.ExecutionContext.IsPublishMode)
+        {
+            throw new NotSupportedException($"'{feature}' is not supported when publishing or deploying the application. Publish support for this MongoDB feature has not been implemented yet; it can only be used when running the app host locally.");
+        }
     }
 
     private static void ConfigureMongoExpressContainer(EnvironmentCallbackContext context, MongoDBServerResource resource)
@@ -411,11 +521,6 @@ public static class MongoDBBuilderExtensions
 /// </remarks>
 public enum MongoDBTlsMode
 {
-    /// <summary>
-    /// The server does not use TLS.
-    /// </summary>
-    Disabled,
-
     /// <summary>
     /// Connections between servers do not use TLS. For incoming connections, the server accepts both TLS and non-TLS.
     /// </summary>
@@ -453,11 +558,16 @@ internal sealed record MongoDBServerKeyFileAnnotation(
 ) : IResourceAnnotation;
 
 /// <summary>
-/// Represents the intent to configure a MongoDB server resource to use encrypted network transport via TLS.
+/// Represents the intent to run a MongoDB server resource in a specific TLS mode when TLS is active.
 /// </summary>
-internal sealed record MongoDBServerTlsAnnotation(
+internal sealed record MongoDBServerTlsModeAnnotation(
     MongoDBTlsMode Mode
 ) : IResourceAnnotation;
+
+/// <summary>
+/// Represents the intent to configure a MongoDB server resource to accept TLS connections whose peer certificate cannot be validated.
+/// </summary>
+internal sealed record MongoDBServerTlsAllowInvalidCertificatesAnnotation : IResourceAnnotation;
 
 internal static class MyMongoDbHealthCheckBuilderExtensions
 {

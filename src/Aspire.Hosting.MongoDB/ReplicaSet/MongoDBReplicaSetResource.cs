@@ -94,10 +94,12 @@ public sealed class MongoDBReplicaSetResource(
         builder.AppendLiteral("&authMechanism=");
         builder.Append($"{MongoDBServerResource.DefaultAuthenticationMechanism:uri}");
 
-        if (membersList.Any(m => m.TlsEnabled))
-        {
-            builder.AppendLiteral("&tls=true");
-        }
+        // NOTE: TLS is turned on lazily (at `BeforeStartEvent` time, once a certificate is known to be available), so the
+        // flag has to be resolved lazily here too. All members of a replica set share the same TLS configuration, so the
+        // first member's endpoint is representative of the set.
+        builder.Append($"{membersList[0].PrimaryEndpoint.GetTlsValue(
+            enabledValue: ReferenceExpression.Create($"&tls=true"),
+            disabledValue: ReferenceExpression.Empty)}");
 
         return builder.Build();
     }

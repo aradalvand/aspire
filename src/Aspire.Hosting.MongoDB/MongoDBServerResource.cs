@@ -85,7 +85,26 @@ public class MongoDBServerResource(string name) : ContainerResource(name), IReso
     /// <summary>
     /// Gets a value indicating whether TLS is enabled for the MongoDB server.
     /// </summary>
-    public bool TlsEnabled => this.HasAnnotationOfType<MongoDBServerTlsAnnotation>();
+    /// <remarks>
+    /// This property proxies through to <see cref="EndpointAnnotation.TlsEnabled"/> on the <see cref="PrimaryEndpoint"/>,
+    /// which is turned on when an HTTPS/TLS certificate is determined to be available for the resource. It is resolved
+    /// lazily so that it stays correct even when TLS is enabled later in the application lifecycle (during
+    /// <c>BeforeStartEvent</c>).
+    /// </remarks>
+    public bool TlsEnabled => PrimaryEndpoint.TlsEnabled;
+
+    /// <summary>
+    /// Gets the TLS mode the MongoDB server is started in when TLS is active.
+    /// </summary>
+    internal MongoDBTlsMode TlsMode =>
+        this.TryGetLastAnnotation<MongoDBServerTlsModeAnnotation>(out var annotation)
+            ? annotation.Mode
+            : MongoDBTlsMode.RequireTls;
+
+    /// <summary>
+    /// Gets a value indicating whether the MongoDB server accepts TLS connections whose peer certificate cannot be validated.
+    /// </summary>
+    internal bool TlsAllowInvalidCertificates => this.HasAnnotationOfType<MongoDBServerTlsAllowInvalidCertificatesAnnotation>();
 
     private static ReferenceExpression AuthenticationDatabaseReference => ReferenceExpression.Create($"{DefaultAuthenticationDatabase}");
 
@@ -137,11 +156,13 @@ public class MongoDBServerResource(string name) : ContainerResource(name), IReso
             builder.AppendLiteral("&readPreference=secondaryPreferred");
         }
 
-        if (TlsEnabled)
-        {
-            builder.AppendLiteral(PasswordParameter is not null || ReplicaSetName is not null ? "&" : "?");
-            builder.AppendLiteral("tls=true");
-        }
+        // NOTE: TLS is turned on lazily (at `BeforeStartEvent` time, once a certificate is known to be available for this
+        // resource), which is after this expression is normally built, so the flag has to be resolved lazily too.
+        builder.Append($"{PrimaryEndpoint.GetTlsValue(
+            enabledValue: PasswordParameter is not null || ReplicaSetName is not null
+                ? ReferenceExpression.Create($"&tls=true")
+                : ReferenceExpression.Create($"?tls=true"),
+            disabledValue: ReferenceExpression.Empty)}");
 
         return builder.Build();
     }
