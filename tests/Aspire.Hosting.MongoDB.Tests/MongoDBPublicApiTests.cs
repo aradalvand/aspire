@@ -341,11 +341,34 @@ public class MongoDBPublicApiTests(ITestOutputHelper testOutputHelper)
     }
 
     [Fact]
-    public void WithTlsShouldThrowWhenBuilderIsNull()
+    public void WithTlsModeShouldThrowWhenBuilderIsNull()
     {
         IResourceBuilder<MongoDBServerResource> builder = null!;
 
-        var action = () => builder.WithTls();
+        var action = () => builder.WithTlsMode();
+
+        var exception = Assert.Throws<ArgumentNullException>(action);
+        Assert.Equal(nameof(builder), exception.ParamName);
+    }
+
+    [Fact]
+    public void WithTlsModeShouldThrowWhenModeIsNotDefined()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var mongo = builder.AddMongoDB("mongo1");
+
+        var action = () => mongo.WithTlsMode((MongoDBTlsMode)999);
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(action);
+        Assert.Equal("mode", exception.ParamName);
+    }
+
+    [Fact]
+    public void WithTlsAllowInvalidCertificatesShouldThrowWhenBuilderIsNull()
+    {
+        IResourceBuilder<MongoDBServerResource> builder = null!;
+
+        var action = () => builder.WithTlsAllowInvalidCertificates();
 
         var exception = Assert.Throws<ArgumentNullException>(action);
         Assert.Equal(nameof(builder), exception.ParamName);

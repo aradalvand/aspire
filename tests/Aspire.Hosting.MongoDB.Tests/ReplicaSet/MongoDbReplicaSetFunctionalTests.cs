@@ -126,11 +126,34 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
         await app.StopAsync();
     }
 
+    /// <summary>
+    /// The ways in which the set of members of a replica set can change between two runs of the app host.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MongoDB rejects a reconfiguration that gives an already-configured host a different <c>_id</c>, so every one of
+    /// these has to leave the ids of the members that stayed untouched.
+    /// </para>
+    /// <para>
+    /// Removing a member is deliberately not covered here: the id mapping itself handles it (see
+    /// <c>BuildMembersConfigurationPreservesIdsOfExistingMembersWhenAMemberIsRemoved</c>), but a forced reconfiguration
+    /// that both drops a member and moves the remaining members' split horizons leaves the surviving members unable to
+    /// pick up the new configuration from each other, so the set never elects a primary again.
+    /// </para>
+    /// </remarks>
+    public enum TopologyChange
+    {
+        None,
+        MemberAdded,
+        MembersReordered,
+    }
+
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
+    [InlineData(TopologyChange.None)]
+    [InlineData(TopologyChange.MemberAdded)]
+    [InlineData(TopologyChange.MembersReordered)]
     [RequiresFeature(TestFeature.Docker)]
-    public async Task VerifyMongoDBMultiNodeReplicaWithDataShouldWorkAcrossUsages(bool changeTopology)
+    public async Task VerifyMongoDBMultiNodeReplicaWithDataShouldWorkAcrossUsages(TopologyChange topologyChange)
     {
         var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
 
@@ -182,28 +205,39 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
             using (var builder = TestDistributedApplicationBuilder.CreateWithTestContainerRegistry(testOutputHelper))
             {
                 var passwordParameter = builder.AddParameter("mongoPassword", value: password!);
-                var mongo1 = builder.AddMongoDB("mongo1");
-                mongo1 = mongo1.WithDataVolume(volumeName1);
 
-                var mongo2 = builder.AddMongoDB("mongo2");
-                mongo2 = mongo2.WithDataVolume(volumeName2);
-
-                var mongo3 = builder.AddMongoDB("mongo3");
-                mongo3 = mongo3.WithDataVolume(volumeName3);
-
-                var rs = builder.AddMongoDBReplicaSet("rs0", password: passwordParameter)
-                    .WithMember(mongo1)
-                    .WithMember(mongo2)
-                    .WithMember(mongo3);
-
-                // NOTE: We add a new node to the replica set.
-                if (changeTopology)
+                // NOTE: The members are added to the application model lazily, so that a member that is dropped from the
+                // replica set is not left behind as a standalone MongoDB server sitting on the data volume of a replica.
+                var volumeNamesByMember = new Dictionary<string, string>
                 {
-                    var mongo4 = builder.AddMongoDB("mongo4");
-                    volumeName4 = VolumeNameGenerator.Generate(mongo4, nameof(VerifyMongoDBMultiNodeReplicaWithDataShouldWorkAcrossUsages));
-                    // NOTE: If the volume already exists (because of a crashing previous run), delete it.
-                    DockerUtils.AttemptDeleteDockerVolume(volumeName4);
-                    rs = rs.WithMember(mongo4);
+                    ["mongo1"] = volumeName1,
+                    ["mongo2"] = volumeName2,
+                    ["mongo3"] = volumeName3,
+                };
+                IResourceBuilder<MongoDBServerResource> AddMember(string name) =>
+                    builder.AddMongoDB(name).WithDataVolume(volumeNamesByMember[name]);
+
+                var rs = builder.AddMongoDBReplicaSet("rs0", password: passwordParameter);
+
+                switch (topologyChange)
+                {
+                    case TopologyChange.None:
+                        rs = rs.WithMember(AddMember("mongo1")).WithMember(AddMember("mongo2")).WithMember(AddMember("mongo3"));
+                        break;
+
+                    case TopologyChange.MemberAdded:
+                        rs = rs.WithMember(AddMember("mongo1")).WithMember(AddMember("mongo2")).WithMember(AddMember("mongo3"));
+
+                        var mongo4 = builder.AddMongoDB("mongo4");
+                        volumeName4 = VolumeNameGenerator.Generate(mongo4, nameof(VerifyMongoDBMultiNodeReplicaWithDataShouldWorkAcrossUsages));
+                        // NOTE: If the volume already exists (because of a crashing previous run), delete it.
+                        DockerUtils.AttemptDeleteDockerVolume(volumeName4);
+                        rs = rs.WithMember(mongo4.WithDataVolume(volumeName4));
+                        break;
+
+                    case TopologyChange.MembersReordered:
+                        rs = rs.WithMember(AddMember("mongo3")).WithMember(AddMember("mongo1")).WithMember(AddMember("mongo2"));
+                        break;
                 }
 
                 using var app = builder.Build();

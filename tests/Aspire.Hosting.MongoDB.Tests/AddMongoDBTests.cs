@@ -2,10 +2,14 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Tests.Utils;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
+
+#pragma warning disable ASPIRECERTIFICATES001
 
 namespace Aspire.Hosting.MongoDB.Tests;
 
@@ -106,11 +110,11 @@ public class AddMongoDBTests(ITestOutputHelper testOutputHelper)
 #pragma warning disable CS0618 // Type or member is obsolete
         Assert.Equal($"mongodb://admin:{dbResource.Parent.PasswordParameter?.Value}@localhost:27017/?authSource=admin&authMechanism=SCRAM-SHA-256", await serverResource.GetConnectionStringAsync());
 #pragma warning restore CS0618 // Type or member is obsolete
-        Assert.Equal("mongodb://admin:{mongodb-password.value}@{mongodb.bindings.tcp.host}:{mongodb.bindings.tcp.port}/?authSource=admin&authMechanism=SCRAM-SHA-256", serverResource.ConnectionStringExpression.ValueExpression);
+        Assert.Equal("mongodb://admin:{mongodb-password.value}@{mongodb.bindings.tcp.host}:{mongodb.bindings.tcp.port}/?authSource=admin&authMechanism=SCRAM-SHA-256", MongoDBTestHelpers.WithoutTlsFlag(serverResource.ConnectionStringExpression.ValueExpression));
 #pragma warning disable CS0618 // Type or member is obsolete
         Assert.Equal($"mongodb://admin:{dbResource.Parent.PasswordParameter?.Value}@localhost:27017/mydatabase?authSource=admin&authMechanism=SCRAM-SHA-256", connectionString);
 #pragma warning restore CS0618 // Type or member is obsolete
-        Assert.Equal("mongodb://admin:{mongodb-password.value}@{mongodb.bindings.tcp.host}:{mongodb.bindings.tcp.port}/mydatabase?authSource=admin&authMechanism=SCRAM-SHA-256", connectionStringResource.ConnectionStringExpression.ValueExpression);
+        Assert.Equal("mongodb://admin:{mongodb-password.value}@{mongodb.bindings.tcp.host}:{mongodb.bindings.tcp.port}/mydatabase?authSource=admin&authMechanism=SCRAM-SHA-256", MongoDBTestHelpers.WithoutTlsFlag(connectionStringResource.ConnectionStringExpression.ValueExpression));
     }
 
     [Fact]
@@ -234,7 +238,7 @@ public class AddMongoDBTests(ITestOutputHelper testOutputHelper)
               }
             }
             """;
-        Assert.Equal(expectedManifest, mongoManifest.ToString());
+        Assert.Equal(expectedManifest, MongoDBTestHelpers.WithoutTlsFlag(mongoManifest.ToString()));
 
         expectedManifest = """
             {
@@ -242,7 +246,7 @@ public class AddMongoDBTests(ITestOutputHelper testOutputHelper)
               "connectionString": "mongodb://admin:{mongo-password-uri-encoded.value}@{mongo.bindings.tcp.host}:{mongo.bindings.tcp.port}/mydb?authSource=admin\u0026authMechanism=SCRAM-SHA-256"
             }
             """;
-        Assert.Equal(expectedManifest, dbManifest.ToString());
+        Assert.Equal(expectedManifest, MongoDBTestHelpers.WithoutTlsFlag(dbManifest.ToString()));
     }
 
     [Fact]
@@ -281,8 +285,8 @@ public class AddMongoDBTests(ITestOutputHelper testOutputHelper)
         Assert.Equal("customers1", db1.Resource.DatabaseName);
         Assert.Equal("customers2", db2.Resource.DatabaseName);
 
-        Assert.Equal("mongodb://admin:{mongo1-password.value}@{mongo1.bindings.tcp.host}:{mongo1.bindings.tcp.port}/customers1?authSource=admin&authMechanism=SCRAM-SHA-256", db1.Resource.ConnectionStringExpression.ValueExpression);
-        Assert.Equal("mongodb://admin:{mongo1-password.value}@{mongo1.bindings.tcp.host}:{mongo1.bindings.tcp.port}/customers2?authSource=admin&authMechanism=SCRAM-SHA-256", db2.Resource.ConnectionStringExpression.ValueExpression);
+        Assert.Equal("mongodb://admin:{mongo1-password.value}@{mongo1.bindings.tcp.host}:{mongo1.bindings.tcp.port}/customers1?authSource=admin&authMechanism=SCRAM-SHA-256", MongoDBTestHelpers.WithoutTlsFlag(db1.Resource.ConnectionStringExpression.ValueExpression));
+        Assert.Equal("mongodb://admin:{mongo1-password.value}@{mongo1.bindings.tcp.host}:{mongo1.bindings.tcp.port}/customers2?authSource=admin&authMechanism=SCRAM-SHA-256", MongoDBTestHelpers.WithoutTlsFlag(db2.Resource.ConnectionStringExpression.ValueExpression));
     }
 
     [Fact]
@@ -299,8 +303,8 @@ public class AddMongoDBTests(ITestOutputHelper testOutputHelper)
         Assert.Equal("imports", db1.Resource.DatabaseName);
         Assert.Equal("imports", db2.Resource.DatabaseName);
 
-        Assert.Equal("mongodb://admin:{mongo1-password.value}@{mongo1.bindings.tcp.host}:{mongo1.bindings.tcp.port}/imports?authSource=admin&authMechanism=SCRAM-SHA-256", db1.Resource.ConnectionStringExpression.ValueExpression);
-        Assert.Equal("mongodb://admin:{mongo2-password.value}@{mongo2.bindings.tcp.host}:{mongo2.bindings.tcp.port}/imports?authSource=admin&authMechanism=SCRAM-SHA-256", db2.Resource.ConnectionStringExpression.ValueExpression);
+        Assert.Equal("mongodb://admin:{mongo1-password.value}@{mongo1.bindings.tcp.host}:{mongo1.bindings.tcp.port}/imports?authSource=admin&authMechanism=SCRAM-SHA-256", MongoDBTestHelpers.WithoutTlsFlag(db1.Resource.ConnectionStringExpression.ValueExpression));
+        Assert.Equal("mongodb://admin:{mongo2-password.value}@{mongo2.bindings.tcp.host}:{mongo2.bindings.tcp.port}/imports?authSource=admin&authMechanism=SCRAM-SHA-256", MongoDBTestHelpers.WithoutTlsFlag(db2.Resource.ConnectionStringExpression.ValueExpression));
     }
 
     [Fact]
@@ -370,34 +374,138 @@ public class AddMongoDBTests(ITestOutputHelper testOutputHelper)
     }
 
     [Fact]
-    public async Task WithTlsAddsCorrectTlsArgs()
+    public async Task MongoDBWithCertificateEnablesTlsAndAddsCorrectTlsArgs()
     {
         using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
-        var mongo1 = builder.AddMongoDB("mongo1").WithTls();
+        using var certificate = CreateTestCertificate();
+
+        var mongo1 = builder.AddMongoDB("mongo1")
+            .WithHttpsCertificate(certificate)
+            .WithEndpoint("tcp", e => e.AllocatedEndpoint = new AllocatedEndpoint(e, "localhost", 27017));
+
+        // Before the `BeforeStartEvent` is published, TLS is not yet enabled.
+        Assert.False(mongo1.Resource.TlsEnabled);
+
+        using var app = builder.Build();
+        var appModel = app.Services.GetRequiredService<DistributedApplicationModel>();
+        await builder.Eventing.PublishAsync(new BeforeStartEvent(app.Services, appModel));
 
         Assert.True(mongo1.Resource.TlsEnabled);
-        Assert.True(mongo1.Resource.TryGetLastAnnotation<MongoDBServerTlsAnnotation>(out var annotation));
-        Assert.Equal(MongoDBTlsMode.RequireTls, annotation.Mode);
 
         var args = await ArgumentEvaluator.GetArgumentListAsync(mongo1.Resource);
-        Assert.Contains("--tlsMode", args);
-        Assert.Contains("requireTLS", args);
+        Assert.Equal("requireTLS", args[args.IndexOf("--tlsMode") + 1]);
         Assert.Contains("--tlsAllowConnectionsWithoutCertificates", args);
+        // Weakening certificate validation is not part of the standard TLS setup.
+        Assert.DoesNotContain("--tlsAllowInvalidCertificates", args);
+
+        var connectionString = await mongo1.Resource.ConnectionStringExpression.GetValueAsync(CancellationToken.None);
+        Assert.Contains("tls=true", connectionString);
+    }
+
+    [Fact]
+    public async Task MongoDBWithoutCertificateDoesNotEnableTls()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+
+        var mongo1 = builder.AddMongoDB("mongo1")
+            .WithoutHttpsCertificate()
+            .WithEndpoint("tcp", e => e.AllocatedEndpoint = new AllocatedEndpoint(e, "localhost", 27017));
+
+        using var app = builder.Build();
+        var appModel = app.Services.GetRequiredService<DistributedApplicationModel>();
+        await builder.Eventing.PublishAsync(new BeforeStartEvent(app.Services, appModel));
+
+        Assert.False(mongo1.Resource.TlsEnabled);
+
+        var args = await ArgumentEvaluator.GetArgumentListAsync(mongo1.Resource);
+        Assert.DoesNotContain("--tlsMode", args);
+
+        var connectionString = await mongo1.Resource.ConnectionStringExpression.GetValueAsync(CancellationToken.None);
+        Assert.DoesNotContain("tls=true", connectionString);
+    }
+
+    [Fact]
+    public async Task WithTlsModeUsesTheConfiguredMode()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        using var certificate = CreateTestCertificate();
+
+        var mongo1 = builder.AddMongoDB("mongo1")
+            .WithHttpsCertificate(certificate)
+            .WithTlsMode(MongoDBTlsMode.AllowTls);
+
+        using var app = builder.Build();
+        var appModel = app.Services.GetRequiredService<DistributedApplicationModel>();
+        await builder.Eventing.PublishAsync(new BeforeStartEvent(app.Services, appModel));
+
+        var args = await ArgumentEvaluator.GetArgumentListAsync(mongo1.Resource);
+        Assert.Equal("allowTLS", args[args.IndexOf("--tlsMode") + 1]);
+    }
+
+    [Fact]
+    public async Task WithTlsAllowInvalidCertificatesAddsArgWhenOptedIn()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        using var certificate = CreateTestCertificate();
+
+        var mongo1 = builder.AddMongoDB("mongo1")
+            .WithHttpsCertificate(certificate)
+            .WithTlsAllowInvalidCertificates();
+
+        using var app = builder.Build();
+        var appModel = app.Services.GetRequiredService<DistributedApplicationModel>();
+        await builder.Eventing.PublishAsync(new BeforeStartEvent(app.Services, appModel));
+
+        var args = await ArgumentEvaluator.GetArgumentListAsync(mongo1.Resource);
         Assert.Contains("--tlsAllowInvalidCertificates", args);
     }
 
     [Fact]
-    public async Task WithTlsWithAllowTlsModeAddsCorrectArg()
+    public void WithTlsModeThrowsInPublishMode()
     {
-        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
-        var mongo1 = builder.AddMongoDB("mongo1").WithTls(MongoDBTlsMode.AllowTls);
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        var mongo1 = builder.AddMongoDB("mongo1");
 
-        Assert.True(mongo1.Resource.TlsEnabled);
-        Assert.True(mongo1.Resource.TryGetLastAnnotation<MongoDBServerTlsAnnotation>(out var annotation));
-        Assert.Equal(MongoDBTlsMode.AllowTls, annotation.Mode);
+        Assert.Throws<NotSupportedException>(() => mongo1.WithTlsMode());
+    }
 
-        var args = await ArgumentEvaluator.GetArgumentListAsync(mongo1.Resource);
-        Assert.Contains("--tlsMode", args);
-        Assert.Contains("allowTLS", args);
+    [Fact]
+    public void WithTlsAllowInvalidCertificatesThrowsInPublishMode()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        var mongo1 = builder.AddMongoDB("mongo1");
+
+        var action = () => mongo1.WithTlsAllowInvalidCertificates();
+
+        Assert.Throws<NotSupportedException>(action);
+    }
+
+    [Fact]
+    public void WithKeyFileThrowsInPublishMode()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        var mongo1 = builder.AddMongoDB("mongo1");
+
+        Assert.Throws<NotSupportedException>(() => mongo1.WithKeyFile(new ParameterResource("test", _ => "test")));
+    }
+
+    [Fact]
+    public void WithReplicaSetThrowsInPublishMode()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        var mongo1 = builder.AddMongoDB("mongo1");
+
+        Assert.Throws<NotSupportedException>(() => mongo1.WithReplicaSet("rs0"));
+    }
+
+    private static X509Certificate2 CreateTestCertificate()
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest("CN=test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(
+            X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, false));
+
+        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
     }
 }

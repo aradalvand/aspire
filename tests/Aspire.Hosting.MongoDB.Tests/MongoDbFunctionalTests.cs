@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 #pragma warning disable ASPIREPERSISTENCE001 // Resource lifetime APIs are experimental.
+#pragma warning disable ASPIRECERTIFICATES001 // Certificate APIs are experimental.
 
 using Aspire.TestUtilities;
 using Aspire.Hosting.Utils;
@@ -112,8 +113,10 @@ public class MongoDbFunctionalTests(ITestOutputHelper testOutputHelper)
 
         using var builder = TestDistributedApplicationBuilder.CreateWithTestContainerRegistry(testOutputHelper);
 
+        // NOTE: MongoDB serves TLS whenever a certificate is available for it; opting in to the developer certificate
+        // explicitly makes the test independent of whether that is also the ambient default on this machine.
         var mongodb = builder.AddMongoDB("mongodb")
-            .WithTls();
+            .WithHttpsDeveloperCertificate();
         var db = mongodb.AddDatabase("testdb");
         using var app = builder.Build();
 
