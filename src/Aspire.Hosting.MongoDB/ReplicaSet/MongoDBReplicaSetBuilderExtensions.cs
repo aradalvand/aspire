@@ -6,6 +6,8 @@ using Microsoft.Extensions.Logging;
 using MongoDB.Bson;
 using MongoDB.Driver;
 
+#pragma warning disable ASPIRECERTIFICATES001
+
 namespace Aspire.Hosting;
 
 /// <summary>
@@ -28,7 +30,24 @@ public static class MongoDBReplicaSetBuilderExtensions
     /// <param name="userName">An optional parameter resource that contains the username for authenticating to the MongoDB replica set. If not provided, a default username will be used.</param>
     /// <param name="password">An optional parameter resource that contains the password for authenticating to the MongoDB replica set. If not provided, a default password will be used.</param>
     /// <remarks>
+    /// <para>
     /// This is a "logical" resource that groups multiple <see cref="MongoDBServerResource"/> instances that are annotated as members of the replica set.
+    /// </para>
+    /// <para>
+    /// The replica set is initialized by the app host itself, which is something that only happens when running locally.
+    /// Publishing and deploying an application that contains a MongoDB replica set is therefore not supported yet and
+    /// this method throws when the app host runs in publish mode.
+    /// </para>
+    /// <example>
+    /// <code lang="csharp">
+    /// var mongo1 = builder.AddMongoDB("mongo-1");
+    /// var mongo2 = builder.AddMongoDB("mongo-2");
+    ///
+    /// var replicaSet = builder.AddMongoDBReplicaSet("rs0")
+    ///     .WithMember(mongo1)
+    ///     .WithMember(mongo2);
+    /// </code>
+    /// </example>
     /// </remarks>
     [AspireExport]
     public static IResourceBuilder<MongoDBReplicaSetResource> AddMongoDBReplicaSet(
@@ -40,6 +59,10 @@ public static class MongoDBReplicaSetBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrEmpty(name);
+        // NOTE: The replica set is only ever initialized by the local orchestration callback below. A published deployment
+        // would start the member containers with `--replSet` but never run `replSetInitiate`/`replSetReconfig` against
+        // them, leaving the advertised connection string unusable, so publishing is rejected outright for now.
+        MongoDBBuilderExtensions.ThrowIfPublishMode(builder, nameof(AddMongoDBReplicaSet));
 
         var rsResource = new MongoDBReplicaSetResource(
             name: name,
@@ -94,6 +117,12 @@ public static class MongoDBReplicaSetBuilderExtensions
                         return;
                     }
 
+                    // NOTE: This is where waiting happens. `WithMember` adds a `WaitFor` annotation for each member, but
+                    // those annotations are only honored by whoever publishes `BeforeResourceStartedEvent`; without this,
+                    // resolving the endpoints below and connecting to the initial primary would race member startup.
+                    await evt.Eventing.PublishAsync(new BeforeResourceStartedEvent(resource, evt.Services), ct)
+                        .ConfigureAwait(false);
+
                     connectionString = await rsResource.ConnectionStringExpression.GetValueAsync(ct).ConfigureAwait(false);
 
                     await evt.Eventing.PublishAsync(new ConnectionStringAvailableEvent(resource, evt.Services), ct)
@@ -104,29 +133,29 @@ public static class MongoDBReplicaSetBuilderExtensions
                         State = KnownResourceStates.Starting,
                     }).ConfigureAwait(false);
 
-                    var initialPrimary = membersList.First();
+                    if (membersList.Find(m => !m.TlsEnabled) is { } memberWithoutTls)
+                    {
+                        // NOTE: TLS is not optional for a replica set here: the `horizons` mechanism used below to advertise
+                        // host-reachable addresses to outside clients keys off the SNI of the incoming connection, which
+                        // only exists on TLS connections.
+                        throw new DistributedApplicationException($"MongoDB replica set member '{memberWithoutTls.Name}' does not have TLS enabled, which is required for members of a replica set. Ensure an HTTPS/TLS certificate is available for the member, for example by trusting the ASP.NET Core developer certificate.");
+                    }
+
+                    var initialPrimary = membersList[0];
                     var connectionStringToPrimary = await initialPrimary.ConnectionStringExpression.GetValueAsync(ct).ConfigureAwait(false);
 
-                    var membersBsonArray = new BsonArray(
-                        await Task.WhenAll(membersList.Select(async (m, i) => new BsonDocument
-                        {
-                            ["_id"] = i,
-                            // NOTE: `host` represents the host and port that should be accessible from within the MongoDB server's container.
-                            // NOTE: We know that the `TargetPort` always has a value (of 27017).
-                            ["host"] = $"{m.Name}:{m.PrimaryEndpoint.TargetPort!.Value}",
-                            // NOTE: `horizons` is a poorly-documented but quite essential MongoDB feature when it comes to clustering — see https://github.com/mongodb/mongo/tree/master/src/mongo/db/repl/split_horizon as well as https://www.percona.com/blog/using-replicasethorizons-in-mongodb/
-                            ["horizons"] = new BsonDocument
-                            {
-                                // NOTE: This represents the host and port that would actually be advertised to outside clients, and should as such be accessible from outside the MongoDB server's container
-                                // NOTE: The property name (`external`) here is purely informational, what matters is the value and specifically whether or not the hostname in the value matches the SNI of the incoming client connections.
-                                ["external"] = await m.PrimaryEndpoint
-                                    .Property(EndpointProperty.HostAndPort)
-                                    .GetValueAsync(ct)
-                                    .ConfigureAwait(false),
-                            }
-                        })).ConfigureAwait(false)
-                    );
+                    var memberHosts = await Task.WhenAll(membersList.Select(async m => new MemberHosts(
+                        // NOTE: `Internal` represents the host and port that should be accessible from within the MongoDB server's container.
+                        // NOTE: We know that the `TargetPort` always has a value (of 27017).
+                        Internal: $"{m.Name}:{m.PrimaryEndpoint.TargetPort!.Value}",
+                        // NOTE: `External` represents the host and port that would actually be advertised to outside clients, and should as such be accessible from outside the MongoDB server's container.
+                        External: await m.PrimaryEndpoint
+                            .Property(EndpointProperty.HostAndPort)
+                            .GetValueAsync(ct)
+                            .ConfigureAwait(false) ?? throw new DistributedApplicationException($"The endpoint of MongoDB replica set member '{m.Name}' could not be resolved.")
+                    ))).ConfigureAwait(false);
 
+                    var configured = false;
                     for (var retries = 0; retries < MaxRetriesAttempt; retries++)
                     {
                         using var primaryClient = new MongoClient(connectionStringToPrimary);
@@ -153,12 +182,13 @@ public static class MongoDBReplicaSetBuilderExtensions
                                     {
                                         ["_id"] = rsResource.Name,
                                         ["version"] = version + 1,
-                                        ["members"] = membersBsonArray,
+                                        ["members"] = BuildMembersConfiguration(memberHosts, currentConfig["config"]["members"].AsBsonArray),
                                     },
                                     ["force"] = true,
                                 },
                                 cancellationToken: ct
                             ).ConfigureAwait(false);
+                            configured = true;
                             break;
                         }
                         catch (MongoCommandException ex) when (ex.CodeName is NewReplicaSetConfigurationIncompatibleCodeName)
@@ -171,6 +201,9 @@ public static class MongoDBReplicaSetBuilderExtensions
                         {
                             logger.LogInformation("Initializing MongoDB replica set resource '{ResourceName}'", resource.Name);
 
+                            // NOTE: There is no existing configuration to preserve member ids from, so all of them are freshly allocated.
+                            var membersBsonArray = BuildMembersConfiguration(memberHosts, currentMembers: null);
+
                             try
                             {
                                 // NOTE: We perform the initialization in two steps, first with a single member and then with the full configuration, the reason for this is to avoid the `election
@@ -179,7 +212,7 @@ public static class MongoDBReplicaSetBuilderExtensions
                                     ["replSetInitiate"] = new BsonDocument
                                     {
                                         ["_id"] = rsResource.Name,
-                                        ["members"] = new BsonArray([membersBsonArray.First()]),
+                                        ["members"] = new BsonArray([membersBsonArray[0]]),
                                     },
                                 }, cancellationToken: ct).ConfigureAwait(false);
 
@@ -193,6 +226,7 @@ public static class MongoDBReplicaSetBuilderExtensions
                                     },
                                     ["force"] = true,
                                 }, cancellationToken: ct).ConfigureAwait(false);
+                                configured = true;
                                 break;
                             }
                             catch (MongoCommandException initiateEx) when (initiateEx.CodeName is ReplicaSetAlreadyInitializedCodeName or NewReplicaSetConfigurationIncompatibleCodeName or ConfigurationInProgressCodeName)
@@ -202,6 +236,13 @@ public static class MongoDBReplicaSetBuilderExtensions
                                 await Task.Delay(s_rsInitiationRetryWaitInterval, ct).ConfigureAwait(false);
                             }
                         }
+                    }
+
+                    if (!configured)
+                    {
+                        // NOTE: Every attempt ran into a retryable error. The replica set is at best partially configured at
+                        // this point, so it must not be reported as running.
+                        throw new DistributedApplicationException($"Failed to configure MongoDB replica set resource '{resource.Name}' after {MaxRetriesAttempt} attempts.");
                     }
 
                     await evt.Notifications.PublishUpdateAsync(resource, s => s with
@@ -231,11 +272,12 @@ public static class MongoDBReplicaSetBuilderExtensions
     /// </param>
     /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
     /// <remarks>
-    /// Internally calls three methods on the member's builder:
+    /// Internally calls the following methods on the member's builder:
     /// <list type="number">
     /// <item> <description><see cref="MongoDBBuilderExtensions.WithReplicaSet(IResourceBuilder{MongoDBServerResource}, string)"/> to set the replica set name on the member resource and configure it accordingly. </description></item>
-    /// <item> <description><see cref="MongoDBBuilderExtensions.WithTls(IResourceBuilder{MongoDBServerResource}, MongoDBTlsMode)"/> to enable TLS on the member resource, which is required for the split-horizon member hostname advertisement by the server. </description></item>
     /// <item> <description><see cref="MongoDBBuilderExtensions.WithKeyFile(IResourceBuilder{MongoDBServerResource}, IExpressionValue, string)"/> to set the key file parameter on the member resource, which is required for internal authentication between replica set members. </description></item>
+    /// <item> <description><see cref="MongoDBBuilderExtensions.WithTlsAllowInvalidCertificates(IResourceBuilder{MongoDBServerResource})"/> because members authenticate to each other with the same certificate they serve to clients, which does not carry a <c>clientAuth</c> extended key usage. </description></item>
+    /// <item> <description><see cref="ResourceBuilderExtensions.WithHttpsDeveloperCertificate{TResource}(IResourceBuilder{TResource}, IResourceBuilder{ParameterResource}?)"/>, unless the member already has certificate configuration of its own. TLS is required for members of a replica set, because the split-horizon member hostname advertisement performed by the server operates on top of SNI. </description></item>
     /// </list>
     /// </remarks>
     [AspireExport]
@@ -249,8 +291,21 @@ public static class MongoDBReplicaSetBuilderExtensions
 
         member
             .WithReplicaSet(builder.Resource.Name)
-            .WithTls() // NOTE: TLS is actually necessary here, because the `horizons` feature used for initializing the replica set operates on top of SNI, which requires client-to-server TLS to be enabled.
-            .WithKeyFile(builder.Resource.SharedKeyFileParameter);
+            .WithKeyFile(builder.Resource.SharedKeyFileParameter)
+            // NOTE: Members of a replica set authenticate to each other over TLS using the very certificate they serve to
+            // clients, and that certificate does not carry a `clientAuth` extended key usage, so peer validation has to be
+            // relaxed for intra-cluster connections to succeed.
+            // TODO: Could be removed and replaced with `--tlsClusterFile <file>` (along with the more restrictive `--tlsAllowInvalidHostnames`) once Aspire adds support for TLS certificates with EKUs of `clientAuth` — see https://discord.com/channels/1361488941836140614/1361488942813286403/1516575977256259735
+            .WithTlsAllowInvalidCertificates();
+
+        // NOTE: TLS is actually necessary here, because the `horizons` feature used for initializing the replica set
+        // operates on top of SNI, which requires client-to-server TLS to be enabled. Members are therefore opted in to the
+        // developer certificate explicitly rather than being left to the ambient default — unless the member has been given
+        // certificate configuration of its own, which is then honored as-is.
+        if (!member.Resource.HasAnnotationOfType<HttpsCertificateAnnotation>())
+        {
+            member.WithHttpsDeveloperCertificate();
+        }
 
         // NOTE: Even if we don't do this, the primary will propagate its username/password credentials to the other members, but we make sure to model this at the level of the resource graph so that the connection strings to individual replica-set members would contain the correct credentials if they are used directly (e.g. for health checks or other purposes).
         member.Resource.UserNameParameter = builder.Resource.SharedUserNameParameter;
@@ -261,6 +316,64 @@ public static class MongoDBReplicaSetBuilderExtensions
             .WaitFor(member)
             .WithRelationship(member, "replica set member");
     }
+
+    /// <summary>
+    /// Builds the <c>members</c> array of a replica set configuration for <paramref name="members"/>, preserving the
+    /// <c>_id</c> of every host that is already part of <paramref name="currentMembers"/>.
+    /// </summary>
+    /// <remarks>
+    /// MongoDB rejects a reconfiguration that assigns a different <c>_id</c> to a host that is already configured, so
+    /// member ids cannot simply be the position of the member in the app host's list: removing or reordering members would
+    /// then shift the ids of the members that stayed. Existing ids are therefore carried over by host and only genuinely
+    /// new members get a freshly allocated, previously unused id.
+    /// </remarks>
+    internal static BsonArray BuildMembersConfiguration(IReadOnlyList<MemberHosts> members, BsonArray? currentMembers)
+    {
+        var idsByHost = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var usedIds = new HashSet<int>();
+
+        foreach (var currentMember in currentMembers?.OfType<BsonDocument>() ?? [])
+        {
+            var id = currentMember["_id"].AsInt32;
+            idsByHost[currentMember["host"].AsString] = id;
+            usedIds.Add(id);
+        }
+
+        var nextUnusedId = 0;
+        var result = new BsonArray();
+        foreach (var member in members)
+        {
+            if (!idsByHost.TryGetValue(member.Internal, out var id))
+            {
+                while (!usedIds.Add(nextUnusedId))
+                {
+                    nextUnusedId++;
+                }
+                id = nextUnusedId;
+            }
+
+            result.Add(new BsonDocument
+            {
+                ["_id"] = id,
+                // NOTE: `host` represents the host and port that should be accessible from within the MongoDB server's container.
+                ["host"] = member.Internal,
+                // NOTE: `horizons` is a poorly-documented but quite essential MongoDB feature when it comes to clustering — see https://github.com/mongodb/mongo/tree/master/src/mongo/db/repl/split_horizon as well as https://www.percona.com/blog/using-replicasethorizons-in-mongodb/
+                ["horizons"] = new BsonDocument
+                {
+                    // NOTE: The property name (`external`) here is purely informational, what matters is the value and specifically whether or not the hostname in the value matches the SNI of the incoming client connections.
+                    ["external"] = member.External,
+                },
+            });
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// The addresses a replica set member is reachable at, from within the container network (<paramref name="Internal"/>)
+    /// and from outside of it (<paramref name="External"/>).
+    /// </summary>
+    internal readonly record struct MemberHosts(string Internal, string External);
 }
 
 internal sealed record MongoReplicaSetMemberAnnotation(
