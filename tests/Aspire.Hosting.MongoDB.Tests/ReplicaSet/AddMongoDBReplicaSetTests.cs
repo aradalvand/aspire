@@ -223,6 +223,60 @@ public class AddMongoDBReplicaSetTests(ITestOutputHelper testOutputHelper)
     }
 
     [Fact]
+    public void WithMemberThrowsWhenTheMemberHasAConflictingPassword()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var memberPassword = builder.AddParameter("member-password", "p@ssw0rd", secret: true);
+        var mongo1 = builder.AddMongoDB("mongo1", password: memberPassword);
+        var rs = builder.AddMongoDBReplicaSet("rs0");
+
+        var action = () => rs.WithMember(mongo1);
+
+        var exception = Assert.Throws<InvalidOperationException>(action);
+        Assert.Contains("explicit password", exception.Message);
+        Assert.Contains(nameof(MongoDBReplicaSetBuilderExtensions.AddMongoDBReplicaSet), exception.Message);
+    }
+
+    [Fact]
+    public void WithMemberThrowsWhenTheMemberHasAConflictingUserName()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var memberUserName = builder.AddParameter("member-username", "someone");
+        var mongo1 = builder.AddMongoDB("mongo1", userName: memberUserName);
+        var rs = builder.AddMongoDBReplicaSet("rs0");
+
+        var action = () => rs.WithMember(mongo1);
+
+        var exception = Assert.Throws<InvalidOperationException>(action);
+        Assert.Contains("explicit user name", exception.Message);
+    }
+
+    [Fact]
+    public void WithMemberAcceptsAMemberThatSharesTheReplicaSetCredentials()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var userName = builder.AddParameter("shared-username", "someone");
+        var password = builder.AddParameter("shared-password", "p@ssw0rd", secret: true);
+        var mongo1 = builder.AddMongoDB("mongo1", userName: userName, password: password);
+
+        var rs = builder.AddMongoDBReplicaSet("rs0", userName: userName, password: password).WithMember(mongo1);
+
+        Assert.Same(userName.Resource, mongo1.Resource.UserNameParameter);
+        Assert.Same(password.Resource, mongo1.Resource.PasswordParameter);
+        Assert.Single(rs.Resource.Members);
+    }
+
+    [Fact]
+    public void WithMemberAdoptsTheReplicaSetCredentialsWhenTheMemberHasGeneratedOnes()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var mongo1 = builder.AddMongoDB("mongo1");
+        var rs = builder.AddMongoDBReplicaSet("rs0").WithMember(mongo1);
+
+        Assert.Same(rs.Resource.SharedPasswordParameter, mongo1.Resource.PasswordParameter);
+    }
+
+    [Fact]
     public async Task ReplicaSetExposesConnectionProperties()
     {
         using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);

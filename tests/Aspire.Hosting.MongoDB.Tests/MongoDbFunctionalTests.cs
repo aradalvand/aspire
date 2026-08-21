@@ -104,6 +104,49 @@ public class MongoDbFunctionalTests(ITestOutputHelper testOutputHelper)
 
     [Fact]
     [RequiresFeature(TestFeature.Docker)]
+    [RequiresFeature(TestFeature.DevCert)]
+    public async Task VerifyMongoExpressConnectsWhenMongoDBUsesTls()
+    {
+        var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var pipeline = new ResiliencePipelineBuilder()
+            .AddRetry(new() { MaxRetryAttempts = 10, Delay = TimeSpan.FromSeconds(2) })
+            .Build();
+
+        using var builder = TestDistributedApplicationBuilder.CreateWithTestContainerRegistry(testOutputHelper);
+
+        // NOTE: Mongo Express speaks plain TCP unless it is told otherwise, so this is what catches a MongoDB server that
+        // serves TLS while its companion admin UI has not been configured for it.
+        var mongoExpress = null as IResourceBuilder<MongoExpressContainerResource>;
+        var mongodb = builder.AddMongoDB("mongodb")
+            .WithHttpsDeveloperCertificate()
+            .WithMongoExpress(configureContainer: c => mongoExpress = c);
+
+        Assert.NotNull(mongoExpress);
+
+        using var app = builder.Build();
+        await app.StartAsync(cts.Token);
+
+        await app.ResourceNotifications.WaitForResourceHealthyAsync(mongodb.Resource.Name, cts.Token);
+        Assert.True(mongodb.Resource.TlsEnabled);
+
+        await app.ResourceNotifications.WaitForResourceAsync(mongoExpress.Resource.Name, KnownResourceStates.Running, cts.Token);
+
+        var endpoint = mongoExpress.Resource.GetEndpoint("http");
+        using var httpClient = new HttpClient { BaseAddress = new Uri(endpoint.Url) };
+
+        // NOTE: Mongo Express connects to MongoDB while it starts up and gives up if it cannot, so being able to serve its
+        // database listing is what proves the TLS connection was actually established.
+        await pipeline.ExecuteAsync(async token =>
+        {
+            using var response = await httpClient.GetAsync("/", token);
+            response.EnsureSuccessStatusCode();
+        }, cts.Token);
+
+        await app.StopAsync();
+    }
+
+    [Fact]
+    [RequiresFeature(TestFeature.Docker)]
     public async Task VerifyMongoDBWithTls()
     {
         var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));

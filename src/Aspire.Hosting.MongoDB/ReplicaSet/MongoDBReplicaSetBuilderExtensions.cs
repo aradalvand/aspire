@@ -102,7 +102,10 @@ public static class MongoDBReplicaSetBuilderExtensions
             })
             .OnInitializeResource(async (resource, evt, ct) =>
             {
-                var logger = evt.Services.GetRequiredService<ILogger<MongoDBReplicaSetResource>>();
+                // NOTE: `evt.Logger` is backed by `ResourceLoggerService` for this resource, so what is logged here shows up
+                // in this resource's console in the dashboard. A category logger would only reach the app host log, which is
+                // the wrong place for diagnostics about why this resource failed to start.
+                var logger = evt.Logger;
 
                 try
                 {
@@ -207,10 +210,10 @@ public static class MongoDBReplicaSetBuilderExtensions
                             configured = true;
                             break;
                         }
-                        catch (MongoCommandException ex) when (ex.CodeName is NewReplicaSetConfigurationIncompatibleCodeName)
+                        catch (MongoCommandException ex) when (ex.CodeName is NewReplicaSetConfigurationIncompatibleCodeName or ConfigurationInProgressCodeName)
                         {
-                            // NOTE: Happens when another concurrent process has already updated the replica set configuration with a higher version. We need to re-fetch the current configuration and retry with an updated version number.
-                            logger.LogInformation("Reconfiguring the replica set failed due to another concurrent process doing the same — retry attempt {Current}/{Max} to begin after {WaitIntervalSeconds} seconds", retries, MaxRetriesAttempt, s_rsInitiationRetryWaitInterval.TotalSeconds);
+                            // NOTE: Happens when another concurrent process has already updated the replica set configuration with a higher version, or when a preceding configuration update is still being applied. Either way we need to re-fetch the current configuration and retry with an updated version number.
+                            logger.LogInformation("Reconfiguring the replica set failed because another configuration update is in flight — retry attempt {Current}/{Max} to begin after {WaitIntervalSeconds} seconds", retries, MaxRetriesAttempt, s_rsInitiationRetryWaitInterval.TotalSeconds);
                             await Task.Delay(s_rsInitiationRetryWaitInterval, ct).ConfigureAwait(false);
                         }
                         catch (MongoCommandException ex) when (ex.CodeName is ReplicaSetNotYetInitializedCodeName)
@@ -334,9 +337,29 @@ public static class MongoDBReplicaSetBuilderExtensions
             member.WithHttpsDeveloperCertificate();
         }
 
-        // NOTE: Even if we don't do this, the primary will propagate its username/password credentials to the other members, but we make sure to model this at the level of the resource graph so that the connection strings to individual replica-set members would contain the correct credentials if they are used directly (e.g. for health checks or other purposes).
+        // NOTE: Every member of a replica set has to authenticate with the same credentials. Even if we don't do this, the
+        // primary will propagate its username/password to the other members, but we make sure to model it at the level of
+        // the resource graph so that the connection strings to individual members contain the correct credentials when they
+        // are used directly (for health checks, for example).
+        // NOTE: Credentials the caller chose are never silently replaced. Doing so would not only surprise them, it would
+        // break a member with an existing data volume: MongoDB's initialization environment variables only take effect on
+        // the very first run, so the volume would keep the credentials it was created with while this run advertised the
+        // replica set's, and authentication would fail.
+        if (member.Resource.UserNameParameter is { } memberUserName && memberUserName != builder.Resource.SharedUserNameParameter)
+        {
+            throw new InvalidOperationException(
+                $"The MongoDB server resource '{member.Resource.Name}' was given an explicit user name that differs from the one of the replica set '{builder.Resource.Name}'. Members of a replica set share a single set of credentials: pass the user name to '{nameof(AddMongoDBReplicaSet)}' instead of to the individual members.");
+        }
+
+        if (!member.Resource.PasswordParameterWasGenerated && member.Resource.PasswordParameter != builder.Resource.SharedPasswordParameter)
+        {
+            throw new InvalidOperationException(
+                $"The MongoDB server resource '{member.Resource.Name}' was given an explicit password that differs from the one of the replica set '{builder.Resource.Name}'. Members of a replica set share a single set of credentials: pass the password to '{nameof(AddMongoDBReplicaSet)}' instead of to the individual members.");
+        }
+
         member.Resource.UserNameParameter = builder.Resource.SharedUserNameParameter;
         member.Resource.PasswordParameter = builder.Resource.SharedPasswordParameter;
+        member.Resource.PasswordParameterWasGenerated = false;
 
         return builder
             .WithAnnotation(new MongoReplicaSetMemberAnnotation(member.Resource))

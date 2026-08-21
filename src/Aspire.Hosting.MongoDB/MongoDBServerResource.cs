@@ -59,6 +59,13 @@ public class MongoDBServerResource(string name) : ContainerResource(name), IReso
     public string? ReplicaSetName { get; internal set; }
 
     /// <summary>
+    /// Gets a value indicating whether <see cref="PasswordParameter"/> was generated for this resource rather than supplied
+    /// by the caller. A generated password may be replaced by a shared one (for example when the server joins a replica
+    /// set); one the caller chose may not.
+    /// </summary>
+    internal bool PasswordParameterWasGenerated { get; set; }
+
+    /// <summary>
     /// Gets a reference to the user name for the MongoDB server.
     /// </summary>
     /// <remarks>

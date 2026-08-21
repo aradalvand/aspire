@@ -64,7 +64,10 @@ public static class MongoDBBuilderExtensions
 
         var passwordParameter = password?.Resource ?? ParameterResourceBuilderExtensions.CreateDefaultPasswordParameter(builder, $"{name}-password", special: false);
 
-        var mongoServerResource = new MongoDBServerResource(name, userName?.Resource, passwordParameter);
+        var mongoServerResource = new MongoDBServerResource(name, userName?.Resource, passwordParameter)
+        {
+            PasswordParameterWasGenerated = password is null,
+        };
 
         string? connectionString = null;
 
@@ -522,6 +525,18 @@ public static class MongoDBBuilderExtensions
         {
             context.EnvironmentVariables["ME_CONFIG_MONGODB_ADMINUSERNAME"] = resource.UserNameReference;
             context.EnvironmentVariables["ME_CONFIG_MONGODB_ADMINPASSWORD"] = resource.PasswordParameter;
+        }
+
+        if (resource.TlsEnabled)
+        {
+            // NOTE: The server only accepts TLS connections, and Mongo Express defaults to plain TCP, so it has to be told
+            // to speak TLS as well or it cannot connect at all.
+            context.EnvironmentVariables["ME_CONFIG_MONGODB_SSL"] = "true";
+            // NOTE: Mongo Express reaches the server at its resource name on the container network, which is not a name that
+            // any certificate Aspire can issue for the server will carry, and it exposes no way to keep chain validation
+            // while relaxing only the host name check. This mirrors the relaxation that replica set members need for the
+            // connections they make to each other.
+            context.EnvironmentVariables["ME_CONFIG_MONGODB_SSLVALIDATE"] = "false";
         }
     }
 }

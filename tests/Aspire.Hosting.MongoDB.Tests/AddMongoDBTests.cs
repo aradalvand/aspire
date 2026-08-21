@@ -425,6 +425,49 @@ public class AddMongoDBTests(ITestOutputHelper testOutputHelper)
     }
 
     [Fact]
+    public async Task MongoExpressIsConfiguredForTlsWhenTheServerUsesIt()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        using var certificate = CreateTestCertificate();
+
+        var mongoExpress = null as IResourceBuilder<MongoExpressContainerResource>;
+        builder.AddMongoDB("mongo")
+            .WithHttpsCertificate(certificate)
+            .WithMongoExpress(configureContainer: c => mongoExpress = c);
+
+        Assert.NotNull(mongoExpress);
+
+        using var app = builder.Build();
+        var appModel = app.Services.GetRequiredService<DistributedApplicationModel>();
+        await builder.Eventing.PublishAsync(new BeforeStartEvent(app.Services, appModel));
+
+        var config = await EnvironmentVariableEvaluator.GetEnvironmentVariablesAsync(mongoExpress.Resource);
+        Assert.Equal("true", config["ME_CONFIG_MONGODB_SSL"]);
+        Assert.Equal("false", config["ME_CONFIG_MONGODB_SSLVALIDATE"]);
+    }
+
+    [Fact]
+    public async Task MongoExpressIsNotConfiguredForTlsWhenTheServerDoesNotUseIt()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+
+        var mongoExpress = null as IResourceBuilder<MongoExpressContainerResource>;
+        builder.AddMongoDB("mongo")
+            .WithoutHttpsCertificate()
+            .WithMongoExpress(configureContainer: c => mongoExpress = c);
+
+        Assert.NotNull(mongoExpress);
+
+        using var app = builder.Build();
+        var appModel = app.Services.GetRequiredService<DistributedApplicationModel>();
+        await builder.Eventing.PublishAsync(new BeforeStartEvent(app.Services, appModel));
+
+        var config = await EnvironmentVariableEvaluator.GetEnvironmentVariablesAsync(mongoExpress.Resource);
+        Assert.DoesNotContain("ME_CONFIG_MONGODB_SSL", config.Keys);
+        Assert.DoesNotContain("ME_CONFIG_MONGODB_SSLVALIDATE", config.Keys);
+    }
+
+    [Fact]
     public async Task MongoDBDoesNotEnableTlsWhenTheDeveloperCertificateIsRequestedButUnavailable()
     {
         using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
