@@ -184,6 +184,12 @@ public class AddMongoDBTests(ITestOutputHelper testOutputHelper)
             },
             e =>
             {
+                // NOTE: Only consumed by the image's entrypoint, to wait for the server before starting Mongo Express.
+                Assert.Equal("ME_CONFIG_MONGODB_URL", e.Key);
+                Assert.Equal("mongodb://mongo:27017", e.Value);
+            },
+            e =>
+            {
                 Assert.Equal("ME_CONFIG_BASICAUTH", e.Key);
                 Assert.Equal("false", e.Value);
             },

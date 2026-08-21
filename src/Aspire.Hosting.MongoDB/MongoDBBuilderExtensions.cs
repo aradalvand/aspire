@@ -518,7 +518,15 @@ public static class MongoDBBuilderExtensions
         var targetPort = resource.PrimaryEndpoint.TargetPort;
         if (targetPort is int targetPortValue)
         {
-            context.EnvironmentVariables["ME_CONFIG_MONGODB_PORT"] = targetPortValue.ToString(CultureInfo.InvariantCulture);
+            var port = targetPortValue.ToString(CultureInfo.InvariantCulture);
+            context.EnvironmentVariables["ME_CONFIG_MONGODB_PORT"] = port;
+            // NOTE: Before starting Mongo Express, the image's entrypoint waits for the server to accept connections, and it
+            // takes the address to wait on from `ME_CONFIG_MONGODB_URL` alone — the image ships a default of
+            // `mongodb://mongo:27017`. Leaving that default in place makes every container spend its whole retry budget
+            // waiting on a host that does not exist before it even starts.
+            // NOTE: This variable does not need to carry credentials or TLS options, because Mongo Express itself ignores
+            // it: it only reads `ME_CONFIG_MONGODB_URL` when `ME_CONFIG_MONGODB_SERVER` is unset, which it is not here.
+            context.EnvironmentVariables["ME_CONFIG_MONGODB_URL"] = $"mongodb://{resource.Name}:{port}";
         }
         context.EnvironmentVariables["ME_CONFIG_BASICAUTH"] = "false";
         if (resource.PasswordParameter is not null)

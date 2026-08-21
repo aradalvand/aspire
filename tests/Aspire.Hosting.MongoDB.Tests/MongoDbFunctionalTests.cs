@@ -108,8 +108,10 @@ public class MongoDbFunctionalTests(ITestOutputHelper testOutputHelper)
     public async Task VerifyMongoExpressConnectsWhenMongoDBUsesTls()
     {
         var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        // NOTE: The retry budget has to cover Mongo Express starting up, which happens after its container is already
+        // reported as running, and which is not fast on a cold agent.
         var pipeline = new ResiliencePipelineBuilder()
-            .AddRetry(new() { MaxRetryAttempts = 10, Delay = TimeSpan.FromSeconds(2) })
+            .AddRetry(new() { MaxRetryAttempts = 30, Delay = TimeSpan.FromSeconds(3) })
             .Build();
 
         using var builder = TestDistributedApplicationBuilder.CreateWithTestContainerRegistry(testOutputHelper);
