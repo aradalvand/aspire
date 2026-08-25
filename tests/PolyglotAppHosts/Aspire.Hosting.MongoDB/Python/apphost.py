@@ -1,7 +1,7 @@
 # Aspire Python validation AppHost
 # Mirrors the top-level TypeScript playground surface with Python-style members.
 
-from aspire_app import create_builder
+from aspire_app import MongoExpressContainerResource, create_builder
 
 
 with create_builder() as builder:
@@ -16,9 +16,12 @@ with create_builder() as builder:
     # Test 5: Test with_data_volume with custom name
     builder.add_mongo_db("mongo-volume-named").with_data_volume(name="mongo-data")
     # Test 6: Test with_host_port on MongoExpress
-    builder.add_mongo_db("mongo-express").with_mongo_express(
-        configure_container=lambda container: container.with_host_port(port=8082)
-    )
+    # NOTE: An annotated function rather than a lambda. `configure_container` returns nothing while
+    # `with_host_port` returns the builder, so a lambda would take on that return type and not match.
+    def configure_mongo_express(container: MongoExpressContainerResource) -> None:
+        container.with_host_port(port=8082)
+
+    builder.add_mongo_db("mongo-express").with_mongo_express(configure_container=configure_mongo_express)
     # Test 7: Test with_mongo_express with container name
     builder.add_mongo_db("mongo-express-named").with_mongo_express(container_name="my-mongo-express")
     # Test 8: Custom password parameter with add_parameter
