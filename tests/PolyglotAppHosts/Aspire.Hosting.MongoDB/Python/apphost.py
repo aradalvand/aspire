@@ -17,7 +17,7 @@ with create_builder() as builder:
     builder.add_mongo_db("mongo-volume-named").with_data_volume(name="mongo-data")
     # Test 6: Test with_host_port on MongoExpress
     builder.add_mongo_db("mongo-express").with_mongo_express(
-        configure_container=lambda container: container.with_host_port(8082)
+        configure_container=lambda container: container.with_host_port(port=8082)
     )
     # Test 7: Test with_mongo_express with container name
     builder.add_mongo_db("mongo-express-named").with_mongo_express(container_name="my-mongo-express")
@@ -33,11 +33,11 @@ with create_builder() as builder:
     builder.add_mongo_db("mongo-bind-all").with_bind_ip_all()
     # Test 12: Test with_replica_set with with_key_file, with_tls_mode and with_tls_allow_invalid_certificates
     key_file_param = builder.add_parameter("rs-keyfile", secret=True, value="my-secret-key")
-    builder.add_mongo_db("mongo-rs-member").with_replica_set("rs0").with_key_file(key_file_param, "/etc/rs.key").with_tls_mode().with_tls_allow_invalid_certificates()
+    builder.add_mongo_db("mongo-rs-member").with_replica_set("rs0").with_key_file(key_file_param, key_file_path="/etc/rs.key").with_tls_mode().with_tls_allow_invalid_certificates()
     # Test 13: Test add_mongo_db_replica_set with with_member
     rs_key_file_param = builder.add_parameter("rs-shared-key", secret=True, value="replica-set-key")
-    mongo1 = builder.add_mongo_db("mongo-rs-1").with_key_file(rs_key_file_param, "/etc/rs.key")
-    mongo2 = builder.add_mongo_db("mongo-rs-2").with_key_file(rs_key_file_param, "/etc/rs.key")
+    mongo1 = builder.add_mongo_db("mongo-rs-1").with_key_file(rs_key_file_param, key_file_path="/etc/rs.key")
+    mongo2 = builder.add_mongo_db("mongo-rs-2").with_key_file(rs_key_file_param, key_file_path="/etc/rs.key")
     replica_set = builder.add_mongo_db_replica_set("rs0").with_member(mongo1).with_member(mongo2)
     # ---- Property access on MongoDBServerResource ----
     _endpoint = mongo.primary_endpoint
