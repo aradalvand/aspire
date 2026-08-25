@@ -210,6 +210,13 @@ public static class MongoDBReplicaSetBuilderExtensions
                             configured = true;
                             break;
                         }
+                        catch (Exception ex) when (ex is TimeoutException or MongoConnectionException)
+                        {
+                            // NOTE: Waiting for the member to start does not guarantee that `mongod` inside it is already
+                            // accepting connections, so a connection failure here is expected rather than terminal.
+                            logger.LogInformation("MongoDB replica set member '{MemberName}' is not accepting connections yet — retry attempt {Current}/{Max} to begin after {WaitIntervalSeconds} seconds", initialPrimary.Name, retries, MaxRetriesAttempt, s_rsInitiationRetryWaitInterval.TotalSeconds);
+                            await Task.Delay(s_rsInitiationRetryWaitInterval, ct).ConfigureAwait(false);
+                        }
                         catch (MongoCommandException ex) when (ex.CodeName is NewReplicaSetConfigurationIncompatibleCodeName or ConfigurationInProgressCodeName)
                         {
                             // NOTE: Happens when another concurrent process has already updated the replica set configuration with a higher version, or when a preceding configuration update is still being applied. Either way we need to re-fetch the current configuration and retry with an updated version number.
@@ -363,7 +370,12 @@ public static class MongoDBReplicaSetBuilderExtensions
 
         return builder
             .WithAnnotation(new MongoReplicaSetMemberAnnotation(member.Resource))
-            .WaitFor(member)
+            // NOTE: This deliberately waits for the member to start rather than to become healthy. A member that carries
+            // `--replSet` has no primary until `replSetInitiate` has run against it, and anything that asks it for one
+            // cannot succeed before then — so waiting for health here would be waiting for something that this very
+            // resource is responsible for bringing about. Waiting for the container to be running is all the initialization
+            // below actually needs, since that is what makes the member's endpoint resolvable.
+            .WaitForStart(member)
             .WithRelationship(member, "replica set member");
     }
 

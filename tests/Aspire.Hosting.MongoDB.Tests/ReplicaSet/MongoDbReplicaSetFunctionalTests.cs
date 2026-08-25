@@ -3,6 +3,8 @@
 
 using Aspire.TestUtilities;
 using Aspire.Hosting.Utils;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using MongoDB.Bson;
 using MongoDB.Driver;
 using Polly;
@@ -48,6 +50,9 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
         using var app = builder.Build();
         await app.StartAsync(cts.Token);
 
+        // NOTE: The member has to reach healthy on its own, before anything is asked of the replica set. Its health check
+        // and the initialization of the replica set must not depend on each other, or a fresh set can never come up.
+        await app.ResourceNotifications.WaitForResourceHealthyAsync(mongo.Resource.Name, cts.Token);
         await app.ResourceNotifications.WaitForResourceHealthyAsync(rs.Resource.Name, cts.Token);
 
         var connectionString = await rs.Resource.ConnectionStringExpression.GetValueAsync(cts.Token);
@@ -57,6 +62,76 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
             var client = new MongoClient(connectionString);
             var db = client.GetDatabase(DbName);
             await CreateTestDataWithReplicaSetFeaturesAsync(db, cts.Token);
+        }, cts.Token);
+
+        await app.StopAsync();
+    }
+
+    [Fact]
+    [RequiresFeature(TestFeature.Docker)]
+    public async Task VerifyReplicaSetInitializesWhenAMemberNeverBecomesHealthy()
+    {
+        var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+
+        using var builder = TestDistributedApplicationBuilder.CreateWithTestContainerRegistry(testOutputHelper);
+
+        // NOTE: This pins down the ordering that a replica set depends on. A member that carries `--replSet` has no primary
+        // until this resource initiates the set against it, so anything the replica set waits for must be reachable without
+        // the member being healthy first. Holding the member's health open forever is a deterministic stand-in for that,
+        // and initialization has to complete regardless.
+        var healthCheckTcs = new TaskCompletionSource<HealthCheckResult>();
+        builder.Services.AddHealthChecks().AddAsyncCheck("held_open", () => healthCheckTcs.Task);
+
+        var mongo = builder.AddMongoDB("mongo1").WithHealthCheck("held_open");
+        var rs = builder.AddMongoDBReplicaSet("rs0").WithMember(mongo);
+
+        using var app = builder.Build();
+        await app.StartAsync(cts.Token);
+
+        await app.ResourceNotifications.WaitForResourceHealthyAsync(rs.Resource.Name, cts.Token);
+
+        var connectionString = await rs.Resource.ConnectionStringExpression.GetValueAsync(cts.Token);
+        var client = new MongoClient(connectionString);
+        var db = client.GetDatabase(DbName);
+        await CreateTestDataWithReplicaSetFeaturesAsync(db, cts.Token);
+
+        healthCheckTcs.SetResult(HealthCheckResult.Healthy());
+
+        await app.StopAsync();
+    }
+
+    [Fact]
+    [RequiresFeature(TestFeature.Docker)]
+    [RequiresFeature(TestFeature.DevCert)]
+    public async Task VerifyMongoExpressConnectsToAReplicaSetMember()
+    {
+        var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var pipeline = new ResiliencePipelineBuilder()
+            .AddRetry(new() { MaxRetryAttempts = 30, Delay = TimeSpan.FromSeconds(3) })
+            .Build();
+
+        using var builder = TestDistributedApplicationBuilder.CreateWithTestContainerRegistry(testOutputHelper);
+
+        // NOTE: Members of a replica set serve TLS and have no primary until the set has been initiated, so this covers the
+        // companion admin UI against the hardest shape of MongoDB server this integration can produce.
+        var mongoExpress = null as IResourceBuilder<MongoExpressContainerResource>;
+        var mongo = builder.AddMongoDB("mongo1").WithMongoExpress(configureContainer: c => mongoExpress = c);
+        var rs = builder.AddMongoDBReplicaSet("rs0").WithMember(mongo);
+
+        Assert.NotNull(mongoExpress);
+
+        using var app = builder.Build();
+        await app.StartAsync(cts.Token);
+
+        await app.ResourceNotifications.WaitForResourceHealthyAsync(rs.Resource.Name, cts.Token);
+
+        var endpoint = mongoExpress.Resource.GetEndpoint("http");
+        using var httpClient = new HttpClient { BaseAddress = new Uri(endpoint.Url) };
+
+        await pipeline.ExecuteAsync(async token =>
+        {
+            using var response = await httpClient.GetAsync("/", token);
+            response.EnsureSuccessStatusCode();
         }, cts.Token);
 
         await app.StopAsync();

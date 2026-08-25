@@ -38,15 +38,20 @@ public class AddMongoDBReplicaSetTests(ITestOutputHelper testOutputHelper)
     }
 
     [Fact]
-    public void WithMemberAddsWaitAnnotationForMember()
+    public void WithMemberWaitsForTheMemberToStartRatherThanToBecomeHealthy()
     {
         using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
         var mongo1 = builder.AddMongoDB("mongo1");
         var rs = builder.AddMongoDBReplicaSet("rs0")
             .WithMember(mongo1);
 
-        Assert.Single(rs.Resource.Annotations.OfType<WaitAnnotation>(),
+        var wait = Assert.Single(rs.Resource.Annotations.OfType<WaitAnnotation>(),
             a => a.Resource == mongo1.Resource);
+
+        // NOTE: Waiting for health here would deadlock a fresh replica set. A member started with `--replSet` has no primary
+        // until this resource initiates the set against it, so its health can only follow the initialization, never precede
+        // it.
+        Assert.Equal(WaitType.WaitUntilStarted, wait.WaitType);
     }
 
     [Fact]

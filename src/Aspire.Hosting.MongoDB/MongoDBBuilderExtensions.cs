@@ -678,7 +678,12 @@ internal class MyMongoDbHealthCheck : IHealthCheck
                     {
                         await _client
                             .GetDatabase(_specifiedDatabase)
-                            .RunCommandAsync(s_command.Value, cancellationToken: cancellationToken)
+                            // NOTE: `RunCommandAsync` selects a server with `ReadPreference.Primary` unless it is told
+                            // otherwise, rather than inheriting the preference from the connection string. That is the wrong
+                            // question for a liveness ping: a MongoDB server that carries `--replSet` has no primary until
+                            // its replica set has been initiated, so requiring one would keep it unhealthy for as long as it
+                            // is waiting to be initiated — which is exactly when something else may be waiting on it.
+                            .RunCommandAsync(s_command.Value, readPreference: ReadPreference.Nearest, cancellationToken: cancellationToken)
                             .ConfigureAwait(false);
                         break;
                     }
