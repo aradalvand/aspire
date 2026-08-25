@@ -175,19 +175,28 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
 
     [Fact]
     [RequiresFeature(TestFeature.Docker)]
+    [RequiresFeature(TestFeature.DevCert)]
     public async Task VerifyMongoDBMultiNodeReplicaSetAllNodesEndUpHealthy()
     {
         var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var pipeline = new ResiliencePipelineBuilder()
+            .AddRetry(new() { MaxRetryAttempts = 30, Delay = TimeSpan.FromSeconds(3) })
+            .Build();
 
         using var builder = TestDistributedApplicationBuilder.CreateWithTestContainerRegistry(testOutputHelper);
 
-        var mongo1 = builder.AddMongoDB("mongo1");
+        // NOTE: Mongo Express is part of this on purpose. A replica set member is the hardest server shape this integration
+        // produces for it — TLS on, and no primary at all until the set has been initiated.
+        var mongoExpress = null as IResourceBuilder<MongoExpressContainerResource>;
+        var mongo1 = builder.AddMongoDB("mongo1").WithMongoExpress(configureContainer: c => mongoExpress = c);
         var mongo2 = builder.AddMongoDB("mongo2");
         var mongo3 = builder.AddMongoDB("mongo3");
         var rs = builder.AddMongoDBReplicaSet("rs0")
             .WithMember(mongo1)
             .WithMember(mongo2)
             .WithMember(mongo3);
+
+        Assert.NotNull(mongoExpress);
 
         using var app = builder.Build();
         await app.StartAsync(cts.Token);
@@ -197,6 +206,18 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
         await app.ResourceNotifications.WaitForResourceHealthyAsync(mongo1.Resource.Name, cts.Token);
         await app.ResourceNotifications.WaitForResourceHealthyAsync(mongo2.Resource.Name, cts.Token);
         await app.ResourceNotifications.WaitForResourceHealthyAsync(mongo3.Resource.Name, cts.Token);
+
+        Assert.True(mongo1.Resource.TlsEnabled);
+        Assert.True(mongo2.Resource.TlsEnabled);
+        Assert.True(mongo3.Resource.TlsEnabled);
+
+        var mongoExpressEndpoint = mongoExpress.Resource.GetEndpoint("http");
+        using var httpClient = new HttpClient { BaseAddress = new Uri(mongoExpressEndpoint.Url) };
+        await pipeline.ExecuteAsync(async token =>
+        {
+            using var response = await httpClient.GetAsync("/", token);
+            response.EnsureSuccessStatusCode();
+        }, cts.Token);
 
         await app.StopAsync();
     }
@@ -237,6 +258,7 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
         var volumeName2 = null as string;
         var volumeName3 = null as string;
         var volumeName4 = null as string;
+        var memberIdsByHost = null as Dictionary<string, int>;
         try
         {
             var password = null as string;
@@ -274,6 +296,9 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
                 var client = new MongoClient(connectionString);
                 var db = client.GetDatabase(DbName);
                 await CreateTestDataWithReplicaSetFeaturesAsync(db, cts.Token);
+
+                memberIdsByHost = await GetMemberIdsByHostAsync(client, cts.Token);
+                Assert.Equal(3, memberIdsByHost.Count);
 
                 await app.StopAsync();
             }
@@ -333,6 +358,26 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
                     item => Assert.Equal("The Shawshank Redemption", item.Name)
                 );
 
+                // NOTE: MongoDB rejects a reconfiguration that gives an already-configured host a different `_id`, so the
+                // ids of the members that were carried over have to be exactly the ones they had in the previous run. This
+                // asserts it against the configuration the server actually ended up with, not just the one we sent.
+                var currentMemberIdsByHost = await GetMemberIdsByHostAsync(client, cts.Token);
+                foreach (var (host, id) in memberIdsByHost!)
+                {
+                    Assert.Equal(id, currentMemberIdsByHost[host]);
+                }
+
+                if (topologyChange is TopologyChange.MemberAdded)
+                {
+                    // NOTE: The new member must not have reused an id that was already taken.
+                    Assert.Equal(4, currentMemberIdsByHost.Count);
+                    Assert.Equal(currentMemberIdsByHost.Values.Distinct().Count(), currentMemberIdsByHost.Count);
+                }
+                else
+                {
+                    Assert.Equal(memberIdsByHost.Count, currentMemberIdsByHost.Count);
+                }
+
                 await app.StopAsync();
             }
         }
@@ -371,6 +416,20 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
         await app.StartAsync(cts.Token);
 
         await app.ResourceNotifications.WaitForResourceAsync(rs.Resource.Name, KnownResourceStates.FailedToStart, cts.Token);
+    }
+
+    /// <summary>
+    /// Reads the replica set configuration the server is actually running with, as a map of member host to member id.
+    /// </summary>
+    private static async Task<Dictionary<string, int>> GetMemberIdsByHostAsync(IMongoClient client, CancellationToken ct)
+    {
+        var config = await client.GetDatabase("admin").RunCommandAsync<BsonDocument>(
+            new BsonDocument { ["replSetGetConfig"] = 1 },
+            cancellationToken: ct);
+
+        return config["config"]["members"].AsBsonArray
+            .OfType<BsonDocument>()
+            .ToDictionary(m => m["host"].AsString, m => m["_id"].AsInt32, StringComparer.OrdinalIgnoreCase);
     }
 
     private static async Task CreateTestDataWithReplicaSetFeaturesAsync(IMongoDatabase mongoDatabase, CancellationToken ct)
