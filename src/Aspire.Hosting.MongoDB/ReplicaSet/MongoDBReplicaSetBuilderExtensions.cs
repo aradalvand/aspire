@@ -52,6 +52,8 @@ public static class MongoDBReplicaSetBuilderExtensions
     /// </code>
     /// </example>
     /// </remarks>
+    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
+    /// <ats-returns>The resource builder.</ats-returns>
     [AspireExport]
     public static IResourceBuilder<MongoDBReplicaSetResource> AddMongoDBReplicaSet(
         this IDistributedApplicationBuilder builder,

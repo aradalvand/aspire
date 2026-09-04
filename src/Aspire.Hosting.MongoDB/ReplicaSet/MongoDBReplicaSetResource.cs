@@ -13,6 +13,10 @@ namespace Aspire.Hosting.ApplicationModel;
 /// <remarks>
 /// This resource is a logical grouping of multiple <see cref="MongoDBServerResource"/> instances that are configured as members of the same replica set.
 /// </remarks>
+/// <param name="name">The name of the resource, which is also the name of the replica set itself.</param>
+/// <param name="keyFile">The content of the keyfile the members use to authenticate to each other. Required.</param>
+/// <param name="sharedUserName">The user name every member authenticates with, or <see langword="null"/> to use the default user name.</param>
+/// <param name="sharedPassword">The password every member authenticates with. Required.</param>
 [Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
 public sealed class MongoDBReplicaSetResource(
     string name,

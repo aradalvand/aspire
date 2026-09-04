@@ -34,6 +34,12 @@ const myService = await builder.addNodeApp("myService", "../my-service", "server
                        .withReference(db);
 ```
 
+## TLS
+
+A MongoDB server serves TLS whenever an HTTPS/TLS certificate is available for it, which by default is the ASP.NET Core developer certificate. `WithoutHttpsCertificate()` opts out and `WithTlsMode()` chooses how strict the server is about TLS on incoming connections. The connection string reports this through a `tls=true` flag that is resolved when the connection string is read, so consumers pick it up automatically.
+
+The developer certificate is issued for `localhost`, so a consumer running on the host validates it without any further configuration. A consumer running in a container is a different matter: it reaches the server by its resource name on the container network, which is not a name the certificate carries, so its TLS handshake fails host name validation. Until certificates covering container network names are available, a containerized consumer of a TLS-enabled MongoDB server has to be configured to relax host name validation, or the server has to opt out of TLS with `WithoutHttpsCertificate()`.
+
 ## Connection Properties
 
 When you reference a MongoDB resource using `WithReference`, the following connection properties are made available to the consuming project:

@@ -346,6 +346,9 @@ public static class MongoDBBuilderExtensions
     /// <remarks>
     /// See https://www.mongodb.com/docs/manual/reference/configuration-options/#mongodb-setting-net.bindIpAll
     /// </remarks>
+    /// <param name="builder">The MongoDB server resource builder.</param>
+    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
+    /// <ats-returns>The resource builder.</ats-returns>
     [AspireExport]
     [Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public static IResourceBuilder<MongoDBServerResource> WithBindIpAll(this IResourceBuilder<MongoDBServerResource> builder)
@@ -363,6 +366,10 @@ public static class MongoDBBuilderExtensions
     /// <remarks>
     /// This method will normally be called by the replica set resource builder when you add a MongoDB server resource as a member of the replica set using <see cref="MongoDBReplicaSetBuilderExtensions.WithMember(IResourceBuilder{MongoDBReplicaSetResource}, IResourceBuilder{MongoDBServerResource})"/>. It can also be called directly if you are looking for lower-level control.
     /// </remarks>
+    /// <param name="builder">The MongoDB server resource builder.</param>
+    /// <param name="name">The name of the replica set the server is a member of.</param>
+    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
+    /// <ats-returns>The resource builder.</ats-returns>
     [AspireExport]
     [Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public static IResourceBuilder<MongoDBServerResource> WithReplicaSet(this IResourceBuilder<MongoDBServerResource> builder, string name)
@@ -385,6 +392,11 @@ public static class MongoDBBuilderExtensions
     /// The keyfile is a shared secret. Every member of the replica set (or sharded cluster) should have the same keyfile, and possession of that secret is what authenticates a connection as "a legitimate member of this cluster."
     /// See https://www.mongodb.com/docs/manual/tutorial/deploy-replica-set-with-keyfile-access-control/
     /// </remarks>
+    /// <param name="builder">The MongoDB server resource builder.</param>
+    /// <param name="keyValue">The content of the keyfile. This is a shared secret: every member of the replica set has to be given the same value, and anything holding it can authenticate as a member of the cluster.</param>
+    /// <param name="keyFilePath">The absolute path the keyfile is mounted at inside the container, which has to include a file name. Defaults to <c>/etc/rs.key</c>.</param>
+    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
+    /// <ats-returns>The resource builder.</ats-returns>
     [AspireExport]
     [Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public static IResourceBuilder<MongoDBServerResource> WithKeyFile(
