@@ -428,39 +428,57 @@ public static class MongoDBReplicaSetBuilderExtensions
         // members' lifecycle is followed instead: it is only up while at least one of them is.
         member.OnResourceStopped(async (stopped, evt, ct) =>
         {
-            bool allStopped;
-            lock (builder.Resource.StoppedMembers)
-            {
-                builder.Resource.StoppedMembers.Add(stopped.Name);
-                allStopped = builder.Resource.StoppedMembers.Count >= builder.Resource.Members.Count();
-            }
-
-            if (allStopped)
-            {
-                await evt.Services.GetRequiredService<ResourceNotificationService>()
-                    .PublishUpdateAsync(builder.Resource, s => s with { State = KnownResourceStates.Exited })
-                    .ConfigureAwait(false);
-            }
+            await evt.Services.GetRequiredService<ResourceNotificationService>()
+                .PublishUpdateAsync(builder.Resource, s =>
+                {
+                    lock (builder.Resource.StoppedMembers)
+                    {
+                        builder.Resource.StoppedMembers.Add(stopped.Name);
+                        return builder.Resource.StoppedMembers.Count >= builder.Resource.Members.Count()
+                            ? s with { State = KnownResourceStates.Exited }
+                            : s;
+                    }
+                })
+                .ConfigureAwait(false);
         });
 
         member.OnBeforeResourceStarted(async (starting, evt, ct) =>
         {
-            bool wasAllStopped;
-            lock (builder.Resource.StoppedMembers)
-            {
-                wasAllStopped = builder.Resource.StoppedMembers.Count >= builder.Resource.Members.Count()
-                    && builder.Resource.StoppedMembers.Count > 0;
-                builder.Resource.StoppedMembers.Remove(starting.Name);
-            }
+            await evt.Services.GetRequiredService<ResourceNotificationService>()
+                .PublishUpdateAsync(builder.Resource, s =>
+                {
+                    lock (builder.Resource.StoppedMembers)
+                    {
+                        var wasAllStopped = builder.Resource.StoppedMembers.Count >= builder.Resource.Members.Count()
+                            && builder.Resource.StoppedMembers.Count > 0;
+                        builder.Resource.StoppedMembers.Remove(starting.Name);
 
-            // NOTE: The configuration lives in the members' own data, so a set that has already been configured is back in
-            // business as soon as a member is, without having to be initialized again.
-            if (wasAllStopped && builder.Resource.IsConfigured)
-            {
-                await evt.Services.GetRequiredService<ResourceNotificationService>()
-                    .PublishUpdateAsync(builder.Resource, s => s with { State = KnownResourceStates.Running })
-                    .ConfigureAwait(false);
-            }
+                        // NOTE: The configuration lives in the members' own data, so a set that has already been configured
+                        // does not need to be initialized again. The member is not ready yet, however, so the set must remain
+                        // `Starting` until its health check succeeds.
+                        return wasAllStopped && builder.Resource.IsConfigured
+                            ? s with { State = KnownResourceStates.Starting }
+                            : s;
+                    }
+                })
+                .ConfigureAwait(false);
+        });
+
+        member.OnResourceReady(async (ready, evt, ct) =>
+        {
+            await evt.Services.GetRequiredService<ResourceNotificationService>()
+                .PublishUpdateAsync(builder.Resource, s =>
+                {
+                    lock (builder.Resource.StoppedMembers)
+                    {
+                        return !ct.IsCancellationRequested
+                            && builder.Resource.IsConfigured
+                            && !builder.Resource.StoppedMembers.Contains(ready.Name)
+                                ? s with { State = KnownResourceStates.Running }
+                                : s;
+                    }
+                })
+                .ConfigureAwait(false);
         });
 
         return builder

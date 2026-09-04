@@ -4,6 +4,7 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Aspire.Hosting.ApplicationModel;
+using Aspire.Hosting.Eventing;
 using Aspire.Hosting.Tests.Utils;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
@@ -269,6 +270,55 @@ public class AddMongoDBReplicaSetTests(ITestOutputHelper testOutputHelper)
         Assert.Contains("key file of its own", exception.Message);
         // NOTE: Rejected before anything was mutated, so the member is still usable.
         Assert.Null(mongo1.Resource.ReplicaSetName);
+    }
+
+    [Fact]
+    public async Task RestartedReplicaSetReportsRunningOnlyAfterMemberIsReady()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var mongo1 = builder.AddMongoDB("mongo1");
+        var replicaSet = builder.AddMongoDBReplicaSet("rs0").WithMember(mongo1);
+
+        using var app = builder.Build();
+        var eventing = app.Services.GetRequiredService<IDistributedApplicationEventing>();
+        var notifications = app.Services.GetRequiredService<ResourceNotificationService>();
+
+        replicaSet.Resource.IsConfigured = true;
+        await notifications.PublishUpdateAsync(replicaSet.Resource, snapshot => snapshot with
+        {
+            State = KnownResourceStates.Running
+        });
+
+        var stoppedSnapshot = new CustomResourceSnapshot
+        {
+            ResourceType = nameof(MongoDBServerResource),
+            Properties = [],
+            State = KnownResourceStates.Exited
+        };
+        var stoppedResourceEvent = new ResourceEvent(mongo1.Resource, mongo1.Resource.Name, stoppedSnapshot);
+        await eventing.PublishAsync(new ResourceStoppedEvent(mongo1.Resource, app.Services, stoppedResourceEvent));
+
+        Assert.Equal(KnownResourceStates.Exited, GetReplicaSetState());
+
+        await eventing.PublishAsync(new BeforeResourceStartedEvent(mongo1.Resource, app.Services));
+
+        Assert.Equal(KnownResourceStates.Starting, GetReplicaSetState());
+
+        using var staleReadyCts = new CancellationTokenSource();
+        staleReadyCts.Cancel();
+        await eventing.PublishAsync(new ResourceReadyEvent(mongo1.Resource, app.Services), staleReadyCts.Token);
+
+        Assert.Equal(KnownResourceStates.Starting, GetReplicaSetState());
+
+        await eventing.PublishAsync(new ResourceReadyEvent(mongo1.Resource, app.Services));
+
+        Assert.Equal(KnownResourceStates.Running, GetReplicaSetState());
+
+        string? GetReplicaSetState()
+        {
+            Assert.True(notifications.TryGetCurrentState(replicaSet.Resource.Name, out var resourceEvent));
+            return resourceEvent.Snapshot.State?.Text;
+        }
     }
 
     [Fact]
