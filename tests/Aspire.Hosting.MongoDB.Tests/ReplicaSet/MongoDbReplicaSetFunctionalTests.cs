@@ -1,14 +1,14 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Aspire.TestUtilities;
+using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Utils;
+using Aspire.TestUtilities;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using MongoDB.Bson;
 using MongoDB.Driver;
 using Polly;
-using Aspire.Hosting.ApplicationModel;
 
 #pragma warning disable ASPIREMONGODB001
 
@@ -37,6 +37,7 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
 
     [Fact]
     [RequiresFeature(TestFeature.Docker)]
+    [RequiresFeature(TestFeature.DevCert)]
     public async Task VerifyMongoDBReplicaSetResource()
     {
         var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -71,6 +72,7 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
 
     [Fact]
     [RequiresFeature(TestFeature.Docker)]
+    [RequiresFeature(TestFeature.DevCert)]
     public async Task VerifyReplicaSetInitializesWhenAMemberNeverBecomesHealthy()
     {
         var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -141,6 +143,7 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
 
     [Fact]
     [RequiresFeature(TestFeature.Docker)]
+    [RequiresFeature(TestFeature.DevCert)]
     public async Task VerifyMongoDBMultiNodeReplicaSetResource()
     {
         var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -244,14 +247,17 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
     {
         None,
         MemberAdded,
+        MemberPrepended,
         MembersReordered,
     }
 
     [Theory]
     [InlineData(TopologyChange.None)]
     [InlineData(TopologyChange.MemberAdded)]
+    [InlineData(TopologyChange.MemberPrepended)]
     [InlineData(TopologyChange.MembersReordered)]
     [RequiresFeature(TestFeature.Docker)]
+    [RequiresFeature(TestFeature.DevCert)]
     public async Task VerifyMongoDBMultiNodeReplicaWithDataShouldWorkAcrossUsages(TopologyChange topologyChange)
     {
         var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -329,14 +335,27 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
                         break;
 
                     case TopologyChange.MemberAdded:
-                        rs = rs.WithMember(AddMember("mongo1")).WithMember(AddMember("mongo2")).WithMember(AddMember("mongo3"));
+                    case TopologyChange.MemberPrepended:
+                        {
+                            var mongo4 = builder.AddMongoDB("mongo4");
+                            volumeName4 = VolumeNameGenerator.Generate(mongo4, nameof(VerifyMongoDBMultiNodeReplicaWithDataShouldWorkAcrossUsages));
+                            // NOTE: If the volume already exists (because of a crashing previous run), delete it.
+                            DockerUtils.AttemptDeleteDockerVolume(volumeName4);
+                            mongo4 = mongo4.WithDataVolume(volumeName4);
 
-                        var mongo4 = builder.AddMongoDB("mongo4");
-                        volumeName4 = VolumeNameGenerator.Generate(mongo4, nameof(VerifyMongoDBMultiNodeReplicaWithDataShouldWorkAcrossUsages));
-                        // NOTE: If the volume already exists (because of a crashing previous run), delete it.
-                        DockerUtils.AttemptDeleteDockerVolume(volumeName4);
-                        rs = rs.WithMember(mongo4.WithDataVolume(volumeName4));
-                        break;
+                            if (topologyChange is TopologyChange.MemberPrepended)
+                            {
+                                rs = rs.WithMember(mongo4);
+                            }
+
+                            rs = rs.WithMember(AddMember("mongo1")).WithMember(AddMember("mongo2")).WithMember(AddMember("mongo3"));
+
+                            if (topologyChange is TopologyChange.MemberAdded)
+                            {
+                                rs = rs.WithMember(mongo4);
+                            }
+                            break;
+                        }
 
                     case TopologyChange.MembersReordered:
                         rs = rs.WithMember(AddMember("mongo3")).WithMember(AddMember("mongo1")).WithMember(AddMember("mongo2"));
@@ -369,7 +388,7 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
                     Assert.Equal(id, currentMemberIdsByHost[host]);
                 }
 
-                if (topologyChange is TopologyChange.MemberAdded)
+                if (topologyChange is TopologyChange.MemberAdded or TopologyChange.MemberPrepended)
                 {
                     // NOTE: The new member must not have reused an id that was already taken.
                     Assert.Equal(4, currentMemberIdsByHost.Count);

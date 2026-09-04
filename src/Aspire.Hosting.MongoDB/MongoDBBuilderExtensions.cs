@@ -396,16 +396,30 @@ public static class MongoDBBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(keyValue);
         ArgumentException.ThrowIfNullOrEmpty(keyFilePath);
+
+        var lastSeparatorIndex = keyFilePath.LastIndexOf('/');
+        if (!keyFilePath.StartsWith('/') ||
+            keyFilePath.Contains('\\') ||
+            lastSeparatorIndex == keyFilePath.Length - 1 ||
+            string.IsNullOrWhiteSpace(keyFilePath[(lastSeparatorIndex + 1)..]) ||
+            keyFilePath[(lastSeparatorIndex + 1)..] is "." or "..")
+        {
+            throw new ArgumentException("The key file path must be an absolute container path with a file name.", nameof(keyFilePath));
+        }
+
+        var keyFileDirectory = lastSeparatorIndex == 0 ? "/" : keyFilePath[..lastSeparatorIndex];
+        var keyFileName = keyFilePath[(lastSeparatorIndex + 1)..];
+
         // NOTE: The keyfile is a shared secret. Publishers materialize container files into the publish artifact (e.g. Docker Compose writes the contents straight into the generated YAML), which would leak it, so publishing is rejected outright until the keyfile can be published as a secret.
         ThrowIfPublishMode(builder.ApplicationBuilder, nameof(WithKeyFile));
 
         return builder
             .WithAnnotation(new MongoDBServerKeyFileAnnotation(keyValue, keyFilePath))
             .WithContainerFiles(
-                destinationPath: Path.GetDirectoryName(keyFilePath)!,
+                destinationPath: keyFileDirectory,
                 callback: async (_, ct) => [new ContainerFile
                 {
-                    Name = Path.GetFileName(keyFilePath),
+                    Name = keyFileName,
                     Contents = await keyValue.GetValueAsync(ct).ConfigureAwait(false),
                     Mode = UnixFileMode.UserRead,
                 }],

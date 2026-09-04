@@ -408,6 +408,27 @@ public class MongoDBPublicApiTests(ITestOutputHelper testOutputHelper)
         Assert.Equal(nameof(keyFilePath), exception.ParamName);
     }
 
+    [Theory]
+    [InlineData("rs.key")]
+    [InlineData("/etc/")]
+    [InlineData("/")]
+    [InlineData("/etc/ ")]
+    [InlineData("/etc/.")]
+    [InlineData("/etc/..")]
+    [InlineData(@"C:\etc\rs.key")]
+    [InlineData(@"/etc\rs.key")]
+    public void WithKeyFileShouldThrowWhenKeyFilePathIsNotAnAbsoluteContainerFilePath(string keyFilePath)
+    {
+        var builder = TestDistributedApplicationBuilder.Create(testOutputHelper)
+            .AddMongoDB("MongoDB");
+        var keyValue = ReferenceExpression.Create($"test-key");
+
+        var action = () => builder.WithKeyFile(keyValue, keyFilePath);
+
+        var exception = Assert.Throws<ArgumentException>(action);
+        Assert.Equal(nameof(keyFilePath), exception.ParamName);
+    }
+
     [Fact]
     public void WithKeyFileShouldThrowWhenKeyValueIsNull()
     {
