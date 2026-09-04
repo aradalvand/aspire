@@ -258,6 +258,26 @@ public class AddMongoDBReplicaSetTests(ITestOutputHelper testOutputHelper)
     }
 
     [Fact]
+    public void WithMemberLeavesTheMemberUntouchedWhenItRejectsTheCredentials()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var memberPassword = builder.AddParameter("member-password", "p@ssw0rd", secret: true);
+        var mongo1 = builder.AddMongoDB("mongo1", password: memberPassword);
+
+        Assert.Throws<InvalidOperationException>(() => builder.AddMongoDBReplicaSet("rs0").WithMember(mongo1));
+
+        // NOTE: The rejected member must not have been left half configured, or the corrected call below would be turned
+        // away as a duplicate rather than accepted.
+        Assert.Null(mongo1.Resource.ReplicaSetName);
+        Assert.False(mongo1.Resource.HasAnnotationOfType<MongoDBServerKeyFileAnnotation>());
+
+        var rs = builder.AddMongoDBReplicaSet("rs1", password: memberPassword).WithMember(mongo1);
+
+        Assert.Equal("rs1", mongo1.Resource.ReplicaSetName);
+        Assert.Single(rs.Resource.Members);
+    }
+
+    [Fact]
     public void WithMemberAcceptsAMemberThatSharesTheReplicaSetCredentials()
     {
         using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);

@@ -60,6 +60,19 @@ The MongoDB database resource combines the server properties above and adds the 
 |---------------|-------------|
 | `DatabaseName` | The MongoDB database name |
 
+### MongoDB replica set
+
+The MongoDB replica set resource exposes the following connection properties. It has no single `Host` and `Port`, because clients discover the members through the seed list carried in the `Uri`:
+
+| Property Name | Description |
+|---------------|-------------|
+| `Username` | The username for authentication, shared by every member of the replica set |
+| `Password` | The password for authentication, shared by every member of the replica set |
+| `AuthenticationDatabase` | The authentication database |
+| `AuthenticationMechanism` | The authentication mechanism |
+| `ReplicaSetName` | The name of the replica set |
+| `Uri` | The connection URI, with the format `mongodb://{Username}:{Password}@{Host1}:{Port1},{Host2}:{Port2}/?replicaSet={ReplicaSetName}&authSource={AuthenticationDatabase}&authMechanism={AuthenticationMechanism}` |
+
 Aspire exposes each property as an environment variable named `[RESOURCE]_[PROPERTY]`. For instance, the `Uri` property of a resource called `db1` becomes `DB1_URI`.
 
 ## Additional documentation

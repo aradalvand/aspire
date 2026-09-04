@@ -360,24 +360,6 @@ public static class MongoDBReplicaSetBuilderExtensions
                     : $"The MongoDB server resource '{member.Resource.Name}' is already a member of the replica set '{existingReplicaSetName}' and cannot also be a member of '{builder.Resource.Name}'.");
         }
 
-        member
-            .WithReplicaSet(builder.Resource.Name)
-            .WithKeyFile(builder.Resource.SharedKeyFileParameter)
-            // NOTE: Members of a replica set authenticate to each other over TLS using the very certificate they serve to
-            // clients, and that certificate does not carry a `clientAuth` extended key usage, so peer validation has to be
-            // relaxed for intra-cluster connections to succeed.
-            // TODO: Could be removed and replaced with `--tlsClusterFile <file>` (along with the more restrictive `--tlsAllowInvalidHostnames`) once Aspire adds support for TLS certificates with EKUs of `clientAuth` — see https://discord.com/channels/1361488941836140614/1361488942813286403/1516575977256259735
-            .WithTlsAllowInvalidCertificates();
-
-        // NOTE: TLS is actually necessary here, because the `horizons` feature used for initializing the replica set
-        // operates on top of SNI, which requires client-to-server TLS to be enabled. Members are therefore opted in to the
-        // developer certificate explicitly rather than being left to the ambient default — unless the member has been given
-        // certificate configuration of its own, which is then honored as-is.
-        if (!member.Resource.HasAnnotationOfType<HttpsCertificateAnnotation>())
-        {
-            member.WithHttpsDeveloperCertificate();
-        }
-
         // NOTE: Every member of a replica set has to authenticate with the same credentials. Even if we don't do this, the
         // primary will propagate its username/password to the other members, but we make sure to model it at the level of
         // the resource graph so that the connection strings to individual members contain the correct credentials when they
@@ -396,6 +378,24 @@ public static class MongoDBReplicaSetBuilderExtensions
         {
             throw new InvalidOperationException(
                 $"The MongoDB server resource '{member.Resource.Name}' was given an explicit password that differs from the one of the replica set '{builder.Resource.Name}'. Members of a replica set share a single set of credentials: pass the password to '{nameof(AddMongoDBReplicaSet)}' instead of to the individual members.");
+        }
+
+        member
+            .WithReplicaSet(builder.Resource.Name)
+            .WithKeyFile(builder.Resource.SharedKeyFileParameter)
+            // NOTE: Members of a replica set authenticate to each other over TLS using the very certificate they serve to
+            // clients, and that certificate does not carry a `clientAuth` extended key usage, so peer validation has to be
+            // relaxed for intra-cluster connections to succeed.
+            // TODO: Could be removed and replaced with `--tlsClusterFile <file>` (along with the more restrictive `--tlsAllowInvalidHostnames`) once Aspire adds support for TLS certificates with EKUs of `clientAuth` — see https://discord.com/channels/1361488941836140614/1361488942813286403/1516575977256259735
+            .WithTlsAllowInvalidCertificates();
+
+        // NOTE: TLS is actually necessary here, because the `horizons` feature used for initializing the replica set
+        // operates on top of SNI, which requires client-to-server TLS to be enabled. Members are therefore opted in to the
+        // developer certificate explicitly rather than being left to the ambient default — unless the member has been given
+        // certificate configuration of its own, which is then honored as-is.
+        if (!member.Resource.HasAnnotationOfType<HttpsCertificateAnnotation>())
+        {
+            member.WithHttpsDeveloperCertificate();
         }
 
         member.Resource.UserNameParameter = builder.Resource.SharedUserNameParameter;
