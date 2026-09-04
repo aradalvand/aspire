@@ -260,7 +260,9 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
     [RequiresFeature(TestFeature.DevCert)]
     public async Task VerifyMongoDBMultiNodeReplicaWithDataShouldWorkAcrossUsages(TopologyChange topologyChange)
     {
-        var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        // NOTE: This runs two complete app hosts in sequence, so each phase gets a budget of its own. Sharing one would let
+        // a slow first phase eat into the second and fail it for no reason of its own.
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
 
         var volumeName1 = null as string;
         var volumeName2 = null as string;
@@ -311,6 +313,7 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
                 await app.StopAsync();
             }
 
+            using var secondPhaseCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
             using (var builder = TestDistributedApplicationBuilder.CreateWithTestContainerRegistry(testOutputHelper))
             {
                 var passwordParameter = builder.AddParameter("mongoPassword", value: password!);
@@ -363,15 +366,15 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
                 }
 
                 using var app = builder.Build();
-                await app.StartAsync(cts.Token);
+                await app.StartAsync(secondPhaseCts.Token);
 
-                await app.ResourceNotifications.WaitForResourceHealthyAsync(rs.Resource.Name, cts.Token);
+                await app.ResourceNotifications.WaitForResourceHealthyAsync(rs.Resource.Name, secondPhaseCts.Token);
 
-                var connectionString = await rs.Resource.ConnectionStringExpression.GetValueAsync(cts.Token);
+                var connectionString = await rs.Resource.ConnectionStringExpression.GetValueAsync(secondPhaseCts.Token);
                 var client = new MongoClient(connectionString);
                 var db = client.GetDatabase(DbName);
                 var moviesCollection = db.GetCollection<Movie>(CollectionNameA);
-                var data = await moviesCollection.Find(_ => true).SortBy(e => e.Name).ToListAsync(cts.Token);
+                var data = await moviesCollection.Find(_ => true).SortBy(e => e.Name).ToListAsync(secondPhaseCts.Token);
                 Assert.Collection(data,
                     item => Assert.Equal("Schindler's List", item.Name),
                     item => Assert.Equal("The Dark Knight", item.Name),
@@ -382,7 +385,7 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
                 // NOTE: MongoDB rejects a reconfiguration that gives an already-configured host a different `_id`, so the
                 // ids of the members that were carried over have to be exactly the ones they had in the previous run. This
                 // asserts it against the configuration the server actually ended up with, not just the one we sent.
-                var currentMemberIdsByHost = await GetMemberIdsByHostAsync(client, cts.Token);
+                var currentMemberIdsByHost = await GetMemberIdsByHostAsync(client, secondPhaseCts.Token);
                 foreach (var (host, id) in memberIdsByHost!)
                 {
                     Assert.Equal(id, currentMemberIdsByHost[host]);

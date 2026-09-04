@@ -171,9 +171,14 @@ public static class MongoDBReplicaSetBuilderExtensions
                     ))).ConfigureAwait(false);
 
                     var configured = false;
+                    var lastConfigurationError = null as MongoCommandException;
                     for (var retries = 0; retries < MaxRetriesAttempt; retries++)
                     {
                         var allMembersUninitialized = true;
+                        // NOTE: Every member is probed rather than just the first one that answers, so that the newest
+                        // configuration is the one that gets extended. Reconfiguring from a member that had fallen behind
+                        // would push its stale view back over the rest, which a forced reconfiguration will not stop.
+                        (MongoDBReplicaSetBuilderExtensions.MemberConnection Connection, BsonDocument Config, int Version)? newest = null;
                         foreach (var memberConnection in memberConnections)
                         {
                             using var memberClient = new MongoClient(memberConnection.ConnectionString);
@@ -197,8 +202,36 @@ public static class MongoDBReplicaSetBuilderExtensions
                                 ).ConfigureAwait(false);
 
                                 var version = currentConfig["config"]["version"].AsInt32;
-                                var currentMembers = currentConfig["config"]["members"].AsBsonArray;
+                                if (newest is null || version > newest.Value.Version)
+                                {
+                                    newest = (memberConnection, currentConfig, version);
+                                }
 
+                                allMembersUninitialized = false;
+                            }
+                            catch (Exception ex) when (ex is TimeoutException or MongoConnectionException)
+                            {
+                                // NOTE: Waiting for a member to start does not guarantee that `mongod` inside it is already
+                                // accepting connections. An unreachable member might still own the persisted configuration,
+                                // so initialization is unsafe until every member has positively reported `NotYetInitialized`.
+                                allMembersUninitialized = false;
+                                logger.LogInformation("MongoDB replica set member '{MemberName}' is not accepting connections yet", memberConnection.Resource.Name);
+                            }
+                            catch (MongoCommandException ex) when (ex.CodeName is ReplicaSetNotYetInitializedCodeName)
+                            {
+                                // Keep probing. A newly inserted member can be uninitialized while another declared member
+                                // still holds the persisted replica set configuration that must be preserved.
+                            }
+                        }
+
+                        if (newest is { } existing)
+                        {
+                            using var existingClient = new MongoClient(existing.Connection.ConnectionString);
+                            var admin = existingClient.GetDatabase("admin");
+                            var currentMembers = existing.Config["config"]["members"].AsBsonArray;
+
+                            try
+                            {
                                 // NOTE: A forced reconfiguration that both drops a member and moves the remaining members' split
                                 // horizons — which is what restarting the app host does, since the host ports are reassigned —
                                 // leaves the surviving members unable to pick the new configuration up from each other, so the
@@ -214,15 +247,27 @@ public static class MongoDBReplicaSetBuilderExtensions
                                     throw new DistributedApplicationException($"Cannot remove {string.Join(", ", removedHosts.Select(h => $"'{h}'"))} from the existing MongoDB replica set '{rsResource.Name}': removing members from a replica set that has already been initialized is not supported yet. Add the member(s) back, or start over from an empty replica set by removing the data volumes of its members.");
                                 }
 
-                                logger.LogInformation("Re-configuring MongoDB replica set resource '{ResourceName}' — last version {Version}", resource.Name, version);
+                                var desiredMembers = BuildMembersConfiguration(memberHosts, currentMembers);
+
+                                // NOTE: A forced reconfiguration skips the checks that a normal one performs, so it is worth
+                                // not doing at all when it would change nothing. That is the common case for a set whose
+                                // members kept their addresses.
+                                if (MembersConfigurationMatches(currentMembers, desiredMembers))
+                                {
+                                    logger.LogInformation("MongoDB replica set resource '{ResourceName}' is already configured as declared — leaving it as it is", resource.Name);
+                                    configured = true;
+                                    break;
+                                }
+
+                                logger.LogInformation("Re-configuring MongoDB replica set resource '{ResourceName}' from member '{MemberName}' — last version {Version}", resource.Name, existing.Connection.Resource.Name, existing.Version);
                                 await admin.RunCommandAsync<BsonDocument>(
                                     command: new BsonDocument
                                     {
                                         ["replSetReconfig"] = new BsonDocument
                                         {
                                             ["_id"] = rsResource.Name,
-                                            ["version"] = version + 1,
-                                            ["members"] = BuildMembersConfiguration(memberHosts, currentMembers),
+                                            ["version"] = existing.Version + 1,
+                                            ["members"] = desiredMembers,
                                         },
                                         ["force"] = true,
                                     },
@@ -234,24 +279,15 @@ public static class MongoDBReplicaSetBuilderExtensions
                                 configured = true;
                                 break;
                             }
-                            catch (Exception ex) when (ex is TimeoutException or MongoConnectionException)
-                            {
-                                // NOTE: Waiting for a member to start does not guarantee that `mongod` inside it is already
-                                // accepting connections. An unreachable member might still own the persisted configuration,
-                                // so initialization is unsafe until every member has positively reported `NotYetInitialized`.
-                                allMembersUninitialized = false;
-                                logger.LogInformation("MongoDB replica set member '{MemberName}' is not accepting connections yet", memberConnection.Resource.Name);
-                            }
                             catch (MongoCommandException ex) when (ex.CodeName is NewReplicaSetConfigurationIncompatibleCodeName or ConfigurationInProgressCodeName)
                             {
-                                allMembersUninitialized = false;
-                                logger.LogInformation("Reconfiguring the replica set failed because another configuration update is in flight");
-                                break;
-                            }
-                            catch (MongoCommandException ex) when (ex.CodeName is ReplicaSetNotYetInitializedCodeName)
-                            {
-                                // Keep probing. A newly inserted member can be uninitialized while another declared member
-                                // still holds the persisted replica set configuration that must be preserved.
+                                // NOTE: `ConfigurationInProgress` is always transient. `NewReplicaSetConfigurationIncompatible`
+                                // is returned both for a version that another update has already moved past, which a retry
+                                // resolves, and for a configuration MongoDB will never accept, which no number of retries
+                                // will. The two are indistinguishable from the code alone, so it is retried and the server's
+                                // own explanation is kept to be reported if the retries run out.
+                                lastConfigurationError = ex;
+                                logger.LogInformation("Reconfiguring the replica set failed: {Reason}", ex.Message);
                             }
                         }
 
@@ -299,7 +335,8 @@ public static class MongoDBReplicaSetBuilderExtensions
                             catch (MongoCommandException initiateEx) when (initiateEx.CodeName is ReplicaSetAlreadyInitializedCodeName or NewReplicaSetConfigurationIncompatibleCodeName or ConfigurationInProgressCodeName)
                             {
                                 // NOTE: Happens when in race with another concurrent process trying to initialize the replica set; so we retry the whole operation
-                                logger.LogInformation("Initiating the replica set failed due to it already being initialized");
+                                lastConfigurationError = initiateEx;
+                                logger.LogInformation("Initiating the replica set failed: {Reason}", initiateEx.Message);
                             }
                             catch (Exception ex) when (ex is TimeoutException or MongoConnectionException)
                             {
@@ -318,7 +355,12 @@ public static class MongoDBReplicaSetBuilderExtensions
                     {
                         // NOTE: Every attempt ran into a retryable error. The replica set is at best partially configured at
                         // this point, so it must not be reported as running.
-                        throw new DistributedApplicationException($"Failed to configure MongoDB replica set resource '{resource.Name}' after {MaxRetriesAttempt} attempts.");
+                        // NOTE: The last error MongoDB gave is carried into the message, because a configuration it will
+                        // never accept fails exactly like one that simply lost a race, and only the server's own
+                        // explanation tells the two apart.
+                        throw new DistributedApplicationException(
+                            $"Failed to configure MongoDB replica set resource '{resource.Name}' after {MaxRetriesAttempt} attempts.{(lastConfigurationError is null ? "" : $" The last error reported by MongoDB was: {lastConfigurationError.Message}")}",
+                            lastConfigurationError!);
                     }
 
                     rsResource.IsConfigured = true;
@@ -512,6 +554,54 @@ public static class MongoDBReplicaSetBuilderExtensions
     }
 
     /// <summary>
+    /// Whether a replica set's current <c>members</c> array already says what <paramref name="desired"/> says, so that a
+    /// reconfiguration would change nothing.
+    /// </summary>
+    /// <remarks>
+    /// The current configuration carries defaults that MongoDB filled in and that we never set, so only the fields we do
+    /// set are compared. Anything else would report a difference on every startup and defeat the point.
+    /// </remarks>
+    private static bool MembersConfigurationMatches(BsonArray current, BsonArray desired)
+    {
+        if (current.Count != desired.Count)
+        {
+            return false;
+        }
+
+        var currentById = current.OfType<BsonDocument>().ToDictionary(m => m["_id"].AsInt32);
+        foreach (var desiredMember in desired.OfType<BsonDocument>())
+        {
+            if (!currentById.TryGetValue(desiredMember["_id"].AsInt32, out var currentMember))
+            {
+                return false;
+            }
+
+            foreach (var field in desiredMember.Names)
+            {
+                if (!currentMember.TryGetValue(field, out var currentValue) || currentValue != desiredMember[field])
+                {
+                    return false;
+                }
+            }
+
+            // NOTE: A member that votes carries no `votes` or `priority` of its own, since those are MongoDB's defaults, so
+            // the absence of them has to be checked against the current values rather than skipped. Otherwise a member that
+            // stopped being the eighth one and should vote again would look unchanged and quietly stay non-voting.
+            if (!desiredMember.Contains("votes") && currentMember.GetValue("votes", 1).ToInt32() != 1)
+            {
+                return false;
+            }
+
+            if (!desiredMember.Contains("priority") && currentMember.GetValue("priority", 1).ToDouble() != 1)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// Builds the <c>members</c> array of a replica set configuration for <paramref name="members"/>, preserving the
     /// <c>_id</c> of every host that is already part of <paramref name="currentMembers"/>.
     /// </summary>
@@ -580,7 +670,7 @@ public static class MongoDBReplicaSetBuilderExtensions
     /// </summary>
     internal readonly record struct MemberHosts(string Internal, string External);
 
-    private readonly record struct MemberConnection(MongoDBServerResource Resource, string ConnectionString);
+    internal readonly record struct MemberConnection(MongoDBServerResource Resource, string ConnectionString);
 }
 
 internal sealed record MongoReplicaSetMemberAnnotation(
