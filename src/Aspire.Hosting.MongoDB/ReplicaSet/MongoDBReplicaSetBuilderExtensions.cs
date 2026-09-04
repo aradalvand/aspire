@@ -374,8 +374,8 @@ public static class MongoDBReplicaSetBuilderExtensions
         // NOTE: Members authenticate to each other with the replica set's own shared key file, so a member that has been
         // given one of its own is a conflict rather than something to quietly overwrite. This is checked here, before
         // anything is mutated, so that the rejected member is left exactly as it was.
-        if (member.Resource.TryGetLastAnnotation<MongoDBServerKeyFileAnnotation>(out var memberKeyFile)
-            && memberKeyFile.Value != builder.Resource.SharedKeyFileParameter)
+        var memberKeyFile = member.Resource.TryGetLastAnnotation<MongoDBServerKeyFileAnnotation>(out var existingKeyFile) ? existingKeyFile : null;
+        if (memberKeyFile is not null && memberKeyFile.Value != builder.Resource.SharedKeyFileParameter)
         {
             throw new InvalidOperationException(
                 $"The MongoDB server resource '{member.Resource.Name}' was given a key file of its own, which conflicts with the one shared by the members of the replica set '{builder.Resource.Name}'. Members are given the replica set's key file automatically, so remove the '{nameof(MongoDBBuilderExtensions.WithKeyFile)}' call on the member.");
@@ -401,9 +401,17 @@ public static class MongoDBReplicaSetBuilderExtensions
                 $"The MongoDB server resource '{member.Resource.Name}' was given an explicit password that differs from the one of the replica set '{builder.Resource.Name}'. Members of a replica set share a single set of credentials: pass the password to '{nameof(AddMongoDBReplicaSet)}' instead of to the individual members.");
         }
 
+        member.WithReplicaSet(builder.Resource.Name);
+
+        // NOTE: A member that already carries the replica set's shared key file keeps it exactly as it is, mounted wherever
+        // the caller put it. Configuring it again would only be a no-op when the path happened to match the default too,
+        // and would otherwise throw after the line above had already mutated the member.
+        if (memberKeyFile is null)
+        {
+            member.WithKeyFile(builder.Resource.SharedKeyFileParameter);
+        }
+
         member
-            .WithReplicaSet(builder.Resource.Name)
-            .WithKeyFile(builder.Resource.SharedKeyFileParameter)
             // NOTE: Members of a replica set authenticate to each other over TLS using the very certificate they serve to
             // clients, and that certificate does not carry a `clientAuth` extended key usage, so peer validation has to be
             // relaxed for intra-cluster connections to succeed.

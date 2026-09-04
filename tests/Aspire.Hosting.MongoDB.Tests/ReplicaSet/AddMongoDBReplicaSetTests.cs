@@ -322,6 +322,23 @@ public class AddMongoDBReplicaSetTests(ITestOutputHelper testOutputHelper)
     }
 
     [Fact]
+    public async Task WithMemberKeepsAMemberKeyFileThatAlreadyUsesTheSharedParameter()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var rs = builder.AddMongoDBReplicaSet("rs0");
+
+        // NOTE: The same key file the replica set shares, but mounted somewhere other than the default. Configuring it
+        // again would throw on the path, after the member had already been mutated.
+        var mongo1 = builder.AddMongoDB("mongo1").WithKeyFile(rs.Resource.SharedKeyFileParameter, "/custom/rs.key");
+        rs.WithMember(mongo1);
+
+        Assert.Equal("rs0", mongo1.Resource.ReplicaSetName);
+        var args = await ArgumentEvaluator.GetArgumentListAsync(mongo1.Resource);
+        Assert.Equal(1, args.Count(a => a == "--keyFile"));
+        Assert.Equal("/custom/rs.key", args[args.IndexOf("--keyFile") + 1]);
+    }
+
+    [Fact]
     public void WithMemberLeavesTheMemberUntouchedWhenItRejectsTheCredentials()
     {
         using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);

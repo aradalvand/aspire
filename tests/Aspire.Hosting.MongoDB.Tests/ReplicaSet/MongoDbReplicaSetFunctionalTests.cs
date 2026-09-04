@@ -488,14 +488,16 @@ public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper
         // NOTE: The cursor is advanced directly rather than through `ToAsyncEnumerable()`, whose adapter does not carry a
         // cancellation token, so that missing the change event fails the test on its own timeout instead of hanging.
         // NOTE: A change stream cursor yields empty batches while it waits, so an empty `Current` is not the end of it.
-        while (await directorsWatchCursor.MoveNextAsync(ct))
+        var observedChange = null as ChangeStreamDocument<Director>;
+        while (observedChange is null && await directorsWatchCursor.MoveNextAsync(ct))
         {
-            if (directorsWatchCursor.Current.FirstOrDefault() is { } change)
-            {
-                // NOTE: We only assert the first item
-                Assert.Contains("Quentin Tarantino", change.FullDocument.Name);
-                break;
-            }
+            observedChange = directorsWatchCursor.Current.FirstOrDefault();
         }
+
+        // NOTE: Asserted after the loop rather than inside it. A cursor that closed without ever yielding a change would
+        // otherwise fall straight out of the loop and leave the watch stream unverified while the test still passed.
+        Assert.NotNull(observedChange);
+        // NOTE: We only assert the first item
+        Assert.Contains("Quentin Tarantino", observedChange.FullDocument.Name);
     }
 }
