@@ -187,6 +187,12 @@ public static class MongoDBReplicaSetBuilderExtensions
                                     {
                                         ["replSetGetConfig"] = 1,
                                     },
+                                    // NOTE: `RunCommandAsync` selects a server with `ReadPreference.Primary` unless it is
+                                    // told otherwise, rather than inheriting the preference from the connection string. A
+                                    // member that holds the persisted configuration may well have no primary yet, which is
+                                    // the very situation this is trying to recover from, so asking for one would time out
+                                    // instead of finding the configuration.
+                                    readPreference: ReadPreference.Nearest,
                                     cancellationToken: ct
                                 ).ConfigureAwait(false);
 
@@ -220,6 +226,9 @@ public static class MongoDBReplicaSetBuilderExtensions
                                         },
                                         ["force"] = true,
                                     },
+                                    // NOTE: A forced reconfiguration exists precisely to be applied from a member that is
+                                    // not primary, so it must not ask for one to run it.
+                                    readPreference: ReadPreference.Nearest,
                                     cancellationToken: ct
                                 ).ConfigureAwait(false);
                                 configured = true;
@@ -270,7 +279,9 @@ public static class MongoDBReplicaSetBuilderExtensions
                                         ["_id"] = rsResource.Name,
                                         ["members"] = new BsonArray([membersBsonArray[0]]),
                                     },
-                                }, cancellationToken: ct).ConfigureAwait(false);
+                                    // NOTE: A member has no primary until this very command has run, so selecting one is
+                                    // the one thing that cannot be asked for here.
+                                }, readPreference: ReadPreference.Nearest, cancellationToken: ct).ConfigureAwait(false);
 
                                 await admin.RunCommandAsync<BsonDocument>(new BsonDocument
                                 {
@@ -281,7 +292,7 @@ public static class MongoDBReplicaSetBuilderExtensions
                                         ["members"] = membersBsonArray,
                                     },
                                     ["force"] = true,
-                                }, cancellationToken: ct).ConfigureAwait(false);
+                                }, readPreference: ReadPreference.Nearest, cancellationToken: ct).ConfigureAwait(false);
                                 configured = true;
                                 break;
                             }

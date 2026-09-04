@@ -203,6 +203,30 @@ public class AddMongoDBReplicaSetTests(ITestOutputHelper testOutputHelper)
     }
 
     [Fact]
+    public void WithMemberAcceptsFiftyMembersAndRejectsTheFiftyFirst()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var rs = builder.AddMongoDBReplicaSet("rs0");
+
+        // NOTE: MongoDB allows a replica set to hold at most 50 members.
+        for (var i = 1; i <= 50; i++)
+        {
+            rs.WithMember(builder.AddMongoDB($"mongo{i}"));
+        }
+
+        Assert.Equal(50, rs.Resource.Members.Count());
+
+        var tooMany = builder.AddMongoDB("mongo51");
+        var exception = Assert.Throws<InvalidOperationException>(() => rs.WithMember(tooMany));
+        Assert.Contains("maximum of 50 members", exception.Message);
+
+        // NOTE: Rejected before anything was mutated, so the member is still usable elsewhere.
+        Assert.Null(tooMany.Resource.ReplicaSetName);
+        Assert.False(tooMany.Resource.HasAnnotationOfType<MongoDBServerKeyFileAnnotation>());
+        Assert.Equal(50, rs.Resource.Members.Count());
+    }
+
+    [Fact]
     public void WithMemberThrowsWhenTheSameMemberIsAddedTwice()
     {
         using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
