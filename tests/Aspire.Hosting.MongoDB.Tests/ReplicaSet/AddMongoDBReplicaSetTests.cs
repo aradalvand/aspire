@@ -401,6 +401,24 @@ public class AddMongoDBReplicaSetTests(ITestOutputHelper testOutputHelper)
         Assert.Equal([0, 2], configuration.Select(m => m["_id"].AsInt32));
     }
 
+    [Fact]
+    public void BuildMembersConfigurationMakesMembersPastTheSeventhNonVoting()
+    {
+        // NOTE: MongoDB allows at most seven voting members and `replSetInitiate` fails outright when handed more.
+        var members = BuildMembers([.. Enumerable.Range(1, 9).Select(i => ($"mongo{i}:27017", $"localhost:2701{i}"))]);
+
+        var configuration = MongoDBReplicaSetBuilderExtensions.BuildMembersConfiguration(members, currentMembers: null);
+
+        var voting = configuration.OfType<BsonDocument>().Where(m => !m.Contains("votes") || m["votes"].AsInt32 != 0).ToList();
+        Assert.Equal(7, voting.Count);
+
+        foreach (var nonVoting in configuration.OfType<BsonDocument>().Skip(7))
+        {
+            Assert.Equal(0, nonVoting["votes"].AsInt32);
+            Assert.Equal(0, nonVoting["priority"].AsInt32);
+        }
+    }
+
     private static MongoDBReplicaSetBuilderExtensions.MemberHosts[] BuildMembers(params (string Internal, string External)[] members) =>
         [.. members.Select(m => new MongoDBReplicaSetBuilderExtensions.MemberHosts(m.Internal, m.External))];
 

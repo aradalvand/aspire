@@ -18,6 +18,7 @@ namespace Aspire.Hosting.ApplicationModel;
 /// <param name="sharedUserName">The user name every member authenticates with, or <see langword="null"/> to use the default user name.</param>
 /// <param name="sharedPassword">The password every member authenticates with. Required.</param>
 [Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
+[AspireExport(ExposeProperties = true)]
 public sealed class MongoDBReplicaSetResource(
     string name,
     ParameterResource keyFile,
@@ -58,6 +59,17 @@ public sealed class MongoDBReplicaSetResource(
         SharedUserNameParameter is null
             ? ReferenceExpression.Create($"{MongoDBServerResource.DefaultUserName}")
             : ReferenceExpression.Create($"{SharedUserNameParameter}");
+
+    /// <summary>
+    /// The members that are currently stopped. The replica set has no process of its own for the orchestrator to follow,
+    /// so its state is derived from the state of its members.
+    /// </summary>
+    internal HashSet<string> StoppedMembers { get; } = new(StringComparers.ResourceName);
+
+    /// <summary>
+    /// Whether the replica set has been configured, meaning it can be reported as running again if its members come back.
+    /// </summary>
+    internal bool IsConfigured { get; set; }
 
     /// <summary>
     /// Gets the MongoDB server resources that are members of this replica set, in the order they were added.

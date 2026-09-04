@@ -534,6 +534,61 @@ public class AddMongoDBTests(ITestOutputHelper testOutputHelper)
     }
 
     [Fact]
+    public async Task WithBindIpAllIsIdempotent()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        // NOTE: `WithReplicaSet` binds all interfaces itself, so this composition is a perfectly reasonable thing to write,
+        // and `mongod` refuses to start if it ends up being given the option twice.
+        var mongo1 = builder.AddMongoDB("mongo1").WithBindIpAll().WithReplicaSet("rs0").WithBindIpAll();
+
+        var args = await ArgumentEvaluator.GetArgumentListAsync(mongo1.Resource);
+        Assert.Equal(1, args.Count(a => a == "--bind_ip_all"));
+    }
+
+    [Fact]
+    public async Task WithReplicaSetIsIdempotentForTheSameName()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var mongo1 = builder.AddMongoDB("mongo1").WithReplicaSet("rs0").WithReplicaSet("rs0");
+
+        var args = await ArgumentEvaluator.GetArgumentListAsync(mongo1.Resource);
+        Assert.Equal(1, args.Count(a => a == "--replSet"));
+        Assert.Equal("rs0", mongo1.Resource.ReplicaSetName);
+    }
+
+    [Fact]
+    public void WithReplicaSetThrowsForADifferentName()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var mongo1 = builder.AddMongoDB("mongo1").WithReplicaSet("rs0");
+
+        var exception = Assert.Throws<InvalidOperationException>(() => mongo1.WithReplicaSet("rs1"));
+        Assert.Contains("already configured as a member of the replica set 'rs0'", exception.Message);
+    }
+
+    [Fact]
+    public async Task WithKeyFileIsIdempotentForTheSameConfiguration()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var keyValue = new ParameterResource("test", _ => "test");
+        var mongo1 = builder.AddMongoDB("mongo1").WithKeyFile(keyValue, "/etc/rs.key").WithKeyFile(keyValue, "/etc/rs.key");
+
+        var args = await ArgumentEvaluator.GetArgumentListAsync(mongo1.Resource);
+        Assert.Equal(1, args.Count(a => a == "--keyFile"));
+    }
+
+    [Fact]
+    public void WithKeyFileThrowsForADifferentConfiguration()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var mongo1 = builder.AddMongoDB("mongo1").WithKeyFile(new ParameterResource("a", _ => "a"), "/etc/rs.key");
+
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => mongo1.WithKeyFile(new ParameterResource("b", _ => "b"), "/etc/other.key"));
+        Assert.Contains("already has a key file configured", exception.Message);
+    }
+
+    [Fact]
     public void WithTlsModeThrowsInPublishMode()
     {
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);

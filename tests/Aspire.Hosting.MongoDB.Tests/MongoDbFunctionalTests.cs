@@ -150,6 +150,7 @@ public class MongoDbFunctionalTests(ITestOutputHelper testOutputHelper)
 
     [Fact]
     [RequiresFeature(TestFeature.Docker)]
+    [RequiresFeature(TestFeature.DevCert)]
     public async Task VerifyMongoDBWithTls()
     {
         var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));

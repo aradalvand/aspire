@@ -355,6 +355,14 @@ public static class MongoDBBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
+        // NOTE: `mongod` refuses to start when an option is given more than once, and `WithReplicaSet` calls this, so a
+        // perfectly reasonable `.WithBindIpAll().WithReplicaSet("rs0")` would otherwise produce a container that cannot
+        // start.
+        if (builder.Resource.HasAnnotationOfType<MongoDBServerBindAllIpAnnotation>())
+        {
+            return builder;
+        }
+
         return builder
             .WithAnnotation(new MongoDBServerBindAllIpAnnotation())
             .WithArgs("--bind_ip_all");
@@ -377,6 +385,15 @@ public static class MongoDBBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrEmpty(name);
         ThrowIfPublishMode(builder.ApplicationBuilder, nameof(WithReplicaSet));
+
+        // NOTE: `mongod` refuses to start when `--replSet` is given more than once, so calling this twice has to either be
+        // a no-op or an error rather than appending a second option.
+        if (builder.Resource.ReplicaSetName is { } existingName)
+        {
+            return string.Equals(existingName, name, StringComparisons.ResourceName)
+                ? builder
+                : throw new InvalidOperationException($"The MongoDB server resource '{builder.Resource.Name}' is already configured as a member of the replica set '{existingName}' and cannot also be a member of '{name}'.");
+        }
 
         builder.Resource.ReplicaSetName = name;
         return builder
@@ -424,6 +441,15 @@ public static class MongoDBBuilderExtensions
 
         // NOTE: The keyfile is a shared secret. Publishers materialize container files into the publish artifact (e.g. Docker Compose writes the contents straight into the generated YAML), which would leak it, so publishing is rejected outright until the keyfile can be published as a secret.
         ThrowIfPublishMode(builder.ApplicationBuilder, nameof(WithKeyFile));
+
+        // NOTE: `mongod` refuses to start when `--keyFile` is given more than once, and each call would also mount another
+        // copy of the file, so a repeat of the very same configuration is a no-op and anything else is an error.
+        if (builder.Resource.TryGetLastAnnotation<MongoDBServerKeyFileAnnotation>(out var existingKeyFile))
+        {
+            return existingKeyFile.Value == keyValue && string.Equals(existingKeyFile.FilePath, keyFilePath, StringComparison.Ordinal)
+                ? builder
+                : throw new InvalidOperationException($"The MongoDB server resource '{builder.Resource.Name}' already has a key file configured at '{existingKeyFile.FilePath}'. A MongoDB server can only have one key file; note that adding a server to a replica set gives it the replica set's shared key file.");
+        }
 
         return builder
             .WithAnnotation(new MongoDBServerKeyFileAnnotation(keyValue, keyFilePath))

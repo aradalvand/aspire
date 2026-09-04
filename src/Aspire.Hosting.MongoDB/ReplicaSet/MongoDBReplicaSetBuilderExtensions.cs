@@ -19,6 +19,9 @@ namespace Aspire.Hosting;
 public static class MongoDBReplicaSetBuilderExtensions
 {
     private const int MaxRetriesAttempt = 10;
+    // NOTE: MongoDB allows a replica set to hold at most 50 members, at most 7 of which may vote — see https://www.mongodb.com/docs/manual/reference/limits/#mongodb-limit-Number-of-Members-of-a-Replica-Set
+    private const int MaxMembers = 50;
+    private const int MaxVotingMembers = 7;
     private const string ReplicaSetAlreadyInitializedCodeName = "AlreadyInitialized";
     private const string ReplicaSetNotYetInitializedCodeName = "NotYetInitialized";
     private const string NewReplicaSetConfigurationIncompatibleCodeName = "NewReplicaSetConfigurationIncompatible";
@@ -307,6 +310,7 @@ public static class MongoDBReplicaSetBuilderExtensions
                         throw new DistributedApplicationException($"Failed to configure MongoDB replica set resource '{resource.Name}' after {MaxRetriesAttempt} attempts.");
                     }
 
+                    rsResource.IsConfigured = true;
                     await evt.Notifications.PublishUpdateAsync(resource, s => s with
                     {
                         State = KnownResourceStates.Running,
@@ -350,6 +354,11 @@ public static class MongoDBReplicaSetBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(member);
+
+        if (builder.Resource.Members.Count() >= MaxMembers)
+        {
+            throw new InvalidOperationException($"The MongoDB replica set '{builder.Resource.Name}' already has the maximum of {MaxMembers} members that MongoDB allows a replica set to hold.");
+        }
 
         // NOTE: A MongoDB server can only belong to one replica set, and can only appear in it once. Without this check the
         // member would silently accumulate a second set of `--replSet`, key file and bind arguments, or contribute a
@@ -404,6 +413,46 @@ public static class MongoDBReplicaSetBuilderExtensions
         member.Resource.PasswordParameter = builder.Resource.SharedPasswordParameter;
         member.Resource.PasswordParameterWasGenerated = false;
 
+        // NOTE: The replica set has no process of its own, so the orchestrator cannot move it out of `Running` when its
+        // members go away and it would otherwise claim to be running long after everything backing it had stopped. Its
+        // members' lifecycle is followed instead: it is only up while at least one of them is.
+        member.OnResourceStopped(async (stopped, evt, ct) =>
+        {
+            bool allStopped;
+            lock (builder.Resource.StoppedMembers)
+            {
+                builder.Resource.StoppedMembers.Add(stopped.Name);
+                allStopped = builder.Resource.StoppedMembers.Count >= builder.Resource.Members.Count();
+            }
+
+            if (allStopped)
+            {
+                await evt.Services.GetRequiredService<ResourceNotificationService>()
+                    .PublishUpdateAsync(builder.Resource, s => s with { State = KnownResourceStates.Exited })
+                    .ConfigureAwait(false);
+            }
+        });
+
+        member.OnBeforeResourceStarted(async (starting, evt, ct) =>
+        {
+            bool wasAllStopped;
+            lock (builder.Resource.StoppedMembers)
+            {
+                wasAllStopped = builder.Resource.StoppedMembers.Count >= builder.Resource.Members.Count()
+                    && builder.Resource.StoppedMembers.Count > 0;
+                builder.Resource.StoppedMembers.Remove(starting.Name);
+            }
+
+            // NOTE: The configuration lives in the members' own data, so a set that has already been configured is back in
+            // business as soon as a member is, without having to be initialized again.
+            if (wasAllStopped && builder.Resource.IsConfigured)
+            {
+                await evt.Services.GetRequiredService<ResourceNotificationService>()
+                    .PublishUpdateAsync(builder.Resource, s => s with { State = KnownResourceStates.Running })
+                    .ConfigureAwait(false);
+            }
+        });
+
         return builder
             .WithAnnotation(new MongoReplicaSetMemberAnnotation(member.Resource))
             // NOTE: This deliberately waits for the member to start rather than to become healthy. A member that carries
@@ -450,7 +499,7 @@ public static class MongoDBReplicaSetBuilderExtensions
                 id = nextUnusedId;
             }
 
-            result.Add(new BsonDocument
+            var document = new BsonDocument
             {
                 ["_id"] = id,
                 // NOTE: `host` represents the host and port that should be accessible from within the MongoDB server's container.
@@ -461,7 +510,18 @@ public static class MongoDBReplicaSetBuilderExtensions
                     // NOTE: The property name (`external`) here is purely informational, what matters is the value and specifically whether or not the hostname in the value matches the SNI of the incoming client connections.
                     ["external"] = member.External,
                 },
-            });
+            };
+
+            // NOTE: A replica set may hold no more than seven voting members, and `replSetInitiate` fails outright if it is
+            // handed more, so members past the seventh join as non-voting ones. They still carry a full copy of the data and
+            // can serve reads; they just take no part in elections.
+            if (result.Count >= MaxVotingMembers)
+            {
+                document["votes"] = 0;
+                document["priority"] = 0;
+            }
+
+            result.Add(document);
         }
 
         return result;

@@ -34,6 +34,46 @@ const myService = await builder.addNodeApp("myService", "../my-service", "server
                        .withReference(db);
 ```
 
+### Replica set
+
+A replica set groups several MongoDB servers into one logical resource, which is what enables transactions and change streams. Reference the replica set rather than any individual member:
+
+**C#**
+
+```csharp
+var mongo1 = builder.AddMongoDB("mongo-1");
+var mongo2 = builder.AddMongoDB("mongo-2");
+var mongo3 = builder.AddMongoDB("mongo-3");
+
+var replicaSet = builder.AddMongoDBReplicaSet("rs0")
+                        .WithMember(mongo1)
+                        .WithMember(mongo2)
+                        .WithMember(mongo3);
+
+var myService = builder.AddProject<Projects.MyService>()
+                       .WithReference(replicaSet)
+                       .WaitFor(replicaSet);
+```
+
+**TypeScript**
+
+```typescript
+const mongo1 = await builder.addMongoDB("mongo-1");
+const mongo2 = await builder.addMongoDB("mongo-2");
+const mongo3 = await builder.addMongoDB("mongo-3");
+
+const replicaSet = await builder.addMongoDBReplicaSet("rs0")
+    .withMember(mongo1)
+    .withMember(mongo2)
+    .withMember(mongo3);
+
+const myService = await builder.addNodeApp("myService", "../my-service", "server.js")
+    .withReference(replicaSet)
+    .waitFor(replicaSet);
+```
+
+A single member is enough if all you need is transactions and change streams rather than redundancy. A replica set holds at most 50 members, the first seven of which vote in elections; the rest join as non-voting members that still carry a full copy of the data.
+
 ## TLS
 
 A MongoDB server serves TLS whenever an HTTPS/TLS certificate is available for it, which by default is the ASP.NET Core developer certificate. `WithoutHttpsCertificate()` opts out and `WithTlsMode()` chooses how strict the server is about TLS on incoming connections. The connection string reports this through a `tls=true` flag that is resolved when the connection string is read, so consumers pick it up automatically.
