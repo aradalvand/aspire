@@ -258,6 +258,20 @@ public class AddMongoDBReplicaSetTests(ITestOutputHelper testOutputHelper)
     }
 
     [Fact]
+    public void WithMemberThrowsWhenTheMemberHasAKeyFileOfItsOwn()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);
+        var mongo1 = builder.AddMongoDB("mongo1").WithKeyFile(new ParameterResource("own-key", _ => "own-key"));
+
+        var action = () => builder.AddMongoDBReplicaSet("rs0").WithMember(mongo1);
+
+        var exception = Assert.Throws<InvalidOperationException>(action);
+        Assert.Contains("key file of its own", exception.Message);
+        // NOTE: Rejected before anything was mutated, so the member is still usable.
+        Assert.Null(mongo1.Resource.ReplicaSetName);
+    }
+
+    [Fact]
     public void WithMemberLeavesTheMemberUntouchedWhenItRejectsTheCredentials()
     {
         using var builder = TestDistributedApplicationBuilder.Create(testOutputHelper);

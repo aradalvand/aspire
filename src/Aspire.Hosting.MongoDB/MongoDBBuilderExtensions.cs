@@ -665,6 +665,12 @@ internal sealed record MongoDBServerTlsModeAnnotation(
 /// </summary>
 internal sealed record MongoDBServerTlsAllowInvalidCertificatesAnnotation : IResourceAnnotation;
 
+// NOTE: The two types below are derived from `MongoDbHealthCheckBuilderExtensions` and `MongoDbHealthCheck` in
+// AspNetCore.Diagnostics.HealthChecks (https://github.com/Xabaril/AspNetCore.Diagnostics.HealthChecks), which is licensed
+// under the Apache License, Version 2.0. See THIRD-PARTY-NOTICES.TXT for the license notice.
+// NOTE: They are modified rather than used as they are, so that the check can target a specific database and select the
+// nearest server. Pinging a database matters for a replica set member, whose `listDatabases` fails while the set is being
+// initialized, and so does the read preference, because a member has no primary until the set has been initiated.
 internal static class MyMongoDbHealthCheckBuilderExtensions
 {
     private const string NAME = "mongodb";

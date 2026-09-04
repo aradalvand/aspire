@@ -60,12 +60,11 @@ await builder.addMongoDB("mongo-rs-member")
     .withTlsAllowInvalidCertificates();
 
 // Test 13: Test AddMongoDBReplicaSet with WithMember
-const rsKeyFileParam = await builder.addParameter("rs-shared-key", { secret: true, value: "replica-set-key" });
-const mongo1 = await builder.addMongoDB("mongo-rs-1")
-    .withKeyFile(rsKeyFileParam, { keyFilePath: "/etc/rs.key" });
+// NOTE: The members are not given a key file of their own here. withMember gives them the replica set's shared one,
+// and a member carrying a different key file is rejected.
+const mongo1 = await builder.addMongoDB("mongo-rs-1");
 
-const mongo2 = await builder.addMongoDB("mongo-rs-2")
-    .withKeyFile(rsKeyFileParam, { keyFilePath: "/etc/rs.key" });
+const mongo2 = await builder.addMongoDB("mongo-rs-2");
 
 const replicaSet = await builder.addMongoDBReplicaSet("rs0")
     .withMember(mongo1)

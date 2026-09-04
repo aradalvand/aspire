@@ -38,9 +38,10 @@ with create_builder() as builder:
     key_file_param = builder.add_parameter("rs-keyfile", secret=True, value="my-secret-key")
     builder.add_mongo_db("mongo-rs-member").with_replica_set("rs0").with_key_file(key_file_param, key_file_path="/etc/rs.key").with_tls_mode().with_tls_allow_invalid_certificates()
     # Test 13: Test add_mongo_db_replica_set with with_member
-    rs_key_file_param = builder.add_parameter("rs-shared-key", secret=True, value="replica-set-key")
-    mongo1 = builder.add_mongo_db("mongo-rs-1").with_key_file(rs_key_file_param, key_file_path="/etc/rs.key")
-    mongo2 = builder.add_mongo_db("mongo-rs-2").with_key_file(rs_key_file_param, key_file_path="/etc/rs.key")
+    # NOTE: The members are not given a key file of their own here. with_member gives them the replica set's shared one,
+    # and a member carrying a different key file is rejected.
+    mongo1 = builder.add_mongo_db("mongo-rs-1")
+    mongo2 = builder.add_mongo_db("mongo-rs-2")
     replica_set = builder.add_mongo_db_replica_set("rs0").with_member(mongo1).with_member(mongo2)
     # ---- Property access on MongoDBServerResource ----
     _endpoint = mongo.primary_endpoint

@@ -61,9 +61,10 @@ func main() {
 	}
 
 	// Test 13: Test AddMongoDBReplicaSet with WithMember
-	rsKeyFileParam := builder.AddParameter("rs-shared-key", &aspire.AddParameterOptions{Secret: aspire.BoolPtr(true), Value: aspire.StringPtr("replica-set-key")})
-	mongo1 := builder.AddMongoDB("mongo-rs-1").WithKeyFile(rsKeyFileParam, &aspire.WithKeyFileOptions{KeyFilePath: aspire.StringPtr("/etc/rs.key")})
-	mongo2 := builder.AddMongoDB("mongo-rs-2").WithKeyFile(rsKeyFileParam, &aspire.WithKeyFileOptions{KeyFilePath: aspire.StringPtr("/etc/rs.key")})
+	// NOTE: The members are not given a key file of their own here. WithMember gives them the replica set's shared one,
+	// and a member carrying a different key file is rejected.
+	mongo1 := builder.AddMongoDB("mongo-rs-1")
+	mongo2 := builder.AddMongoDB("mongo-rs-2")
 
 	replicaSet := builder.AddMongoDBReplicaSet("rs0").WithMember(mongo1).WithMember(mongo2)
 	if err = replicaSet.Err(); err != nil {

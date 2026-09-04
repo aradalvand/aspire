@@ -371,6 +371,16 @@ public static class MongoDBReplicaSetBuilderExtensions
                     : $"The MongoDB server resource '{member.Resource.Name}' is already a member of the replica set '{existingReplicaSetName}' and cannot also be a member of '{builder.Resource.Name}'.");
         }
 
+        // NOTE: Members authenticate to each other with the replica set's own shared key file, so a member that has been
+        // given one of its own is a conflict rather than something to quietly overwrite. This is checked here, before
+        // anything is mutated, so that the rejected member is left exactly as it was.
+        if (member.Resource.TryGetLastAnnotation<MongoDBServerKeyFileAnnotation>(out var memberKeyFile)
+            && memberKeyFile.Value != builder.Resource.SharedKeyFileParameter)
+        {
+            throw new InvalidOperationException(
+                $"The MongoDB server resource '{member.Resource.Name}' was given a key file of its own, which conflicts with the one shared by the members of the replica set '{builder.Resource.Name}'. Members are given the replica set's key file automatically, so remove the '{nameof(MongoDBBuilderExtensions.WithKeyFile)}' call on the member.");
+        }
+
         // NOTE: Every member of a replica set has to authenticate with the same credentials. Even if we don't do this, the
         // primary will propagate its username/password to the other members, but we make sure to model it at the level of
         // the resource graph so that the connection strings to individual members contain the correct credentials when they

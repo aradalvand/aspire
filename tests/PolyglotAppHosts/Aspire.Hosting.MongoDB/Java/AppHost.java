@@ -45,11 +45,10 @@ void main() throws Exception {
             .withTlsMode()
             .withTlsAllowInvalidCertificates();
         // Test 13: Test addMongoDBReplicaSet with withMember
-        var rsKeyFileParam = builder.addParameter("rs-shared-key", new AddParameterOptions().secret(true).value("replica-set-key"));
-        var mongo1 = builder.addMongoDB("mongo-rs-1")
-            .withKeyFile(rsKeyFileParam, "/etc/rs.key");
-        var mongo2 = builder.addMongoDB("mongo-rs-2")
-            .withKeyFile(rsKeyFileParam, "/etc/rs.key");
+        // NOTE: The members are not given a key file of their own here. withMember gives them the replica set's shared one,
+        // and a member carrying a different key file is rejected.
+        var mongo1 = builder.addMongoDB("mongo-rs-1");
+        var mongo2 = builder.addMongoDB("mongo-rs-2");
         var replicaSet = builder.addMongoDBReplicaSet("rs0")
             .withMember(mongo1)
             .withMember(mongo2);
