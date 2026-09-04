@@ -1,5 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
+using System.Diagnostics.CodeAnalysis;
+
+#pragma warning disable ASPIREMONGODB001
+
 namespace Aspire.Hosting.ApplicationModel;
 
 /// <summary>
@@ -56,6 +60,7 @@ public class MongoDBServerResource(string name) : ContainerResource(name), IReso
     /// <summary>
     /// Gets the name of the replica set this MongoDB server belongs to, or <see langword="null"/> if it is not part of a replica set.
     /// </summary>
+    [Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public string? ReplicaSetName { get; internal set; }
 
     /// <summary>
@@ -98,6 +103,7 @@ public class MongoDBServerResource(string name) : ContainerResource(name), IReso
     /// lazily so that it stays correct even when TLS is enabled later in the application lifecycle (during
     /// <c>BeforeStartEvent</c>).
     /// </remarks>
+    [Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public bool TlsEnabled => PrimaryEndpoint.TlsEnabled;
 
     /// <summary>

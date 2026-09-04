@@ -3,6 +3,7 @@
 
 #pragma warning disable ASPIREPERSISTENCE001 // Resource lifetime APIs are experimental.
 #pragma warning disable ASPIRECERTIFICATES001 // Certificate APIs are experimental.
+#pragma warning disable ASPIREMONGODB001 // MongoDB replica set APIs are experimental.
 
 using Aspire.TestUtilities;
 using Aspire.Hosting.Utils;

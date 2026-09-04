@@ -1,5 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
+using System.Diagnostics.CodeAnalysis;
 using Aspire.Hosting.ApplicationModel;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -7,12 +8,14 @@ using MongoDB.Bson;
 using MongoDB.Driver;
 
 #pragma warning disable ASPIRECERTIFICATES001
+#pragma warning disable ASPIREMONGODB001
 
 namespace Aspire.Hosting;
 
 /// <summary>
 /// Provides extension methods for adding MongoDB resources to an <see cref="IDistributedApplicationBuilder"/>.
 /// </summary>
+[Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
 public static class MongoDBReplicaSetBuilderExtensions
 {
     private const int MaxRetriesAttempt = 10;

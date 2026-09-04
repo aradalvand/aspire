@@ -4,6 +4,8 @@
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Utils;
 
+#pragma warning disable ASPIREMONGODB001
+
 namespace Aspire.Hosting.MongoDB.Tests;
 
 public class MongoDBPublicApiTests(ITestOutputHelper testOutputHelper)

@@ -1,5 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.MongoDB;
@@ -10,6 +11,7 @@ using MongoDB.Driver;
 
 #pragma warning disable ASPIRECERTIFICATES001
 #pragma warning disable ASPIREDOCKERFILEBUILDER001
+#pragma warning disable ASPIREMONGODB001
 
 namespace Aspire.Hosting;
 
@@ -345,6 +347,7 @@ public static class MongoDBBuilderExtensions
     /// See https://www.mongodb.com/docs/manual/reference/configuration-options/#mongodb-setting-net.bindIpAll
     /// </remarks>
     [AspireExport]
+    [Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public static IResourceBuilder<MongoDBServerResource> WithBindIpAll(this IResourceBuilder<MongoDBServerResource> builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -361,6 +364,7 @@ public static class MongoDBBuilderExtensions
     /// This method will normally be called by the replica set resource builder when you add a MongoDB server resource as a member of the replica set using <see cref="MongoDBReplicaSetBuilderExtensions.WithMember(IResourceBuilder{MongoDBReplicaSetResource}, IResourceBuilder{MongoDBServerResource})"/>. It can also be called directly if you are looking for lower-level control.
     /// </remarks>
     [AspireExport]
+    [Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public static IResourceBuilder<MongoDBServerResource> WithReplicaSet(this IResourceBuilder<MongoDBServerResource> builder, string name)
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -382,6 +386,7 @@ public static class MongoDBBuilderExtensions
     /// See https://www.mongodb.com/docs/manual/tutorial/deploy-replica-set-with-keyfile-access-control/
     /// </remarks>
     [AspireExport]
+    [Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public static IResourceBuilder<MongoDBServerResource> WithKeyFile(
         this IResourceBuilder<MongoDBServerResource> builder,
         IExpressionValue keyValue,
@@ -440,6 +445,7 @@ public static class MongoDBBuilderExtensions
     /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
     /// <ats-returns>The resource builder.</ats-returns>
     [AspireExport]
+    [Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public static IResourceBuilder<MongoDBServerResource> WithTlsMode(
         this IResourceBuilder<MongoDBServerResource> builder,
         MongoDBTlsMode mode = MongoDBTlsMode.RequireTls
@@ -482,6 +488,7 @@ public static class MongoDBBuilderExtensions
     /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
     /// <ats-returns>The resource builder.</ats-returns>
     [AspireExport]
+    [Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public static IResourceBuilder<MongoDBServerResource> WithTlsAllowInvalidCertificates(this IResourceBuilder<MongoDBServerResource> builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -555,6 +562,7 @@ public static class MongoDBBuilderExtensions
 /// <remarks>
 /// See https://www.mongodb.com/docs/manual/reference/configuration-options/#mongodb-setting-net.tls.mode
 /// </remarks>
+[Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
 public enum MongoDBTlsMode
 {
     /// <summary>

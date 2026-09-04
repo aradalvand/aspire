@@ -10,6 +10,7 @@ using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
 
 #pragma warning disable ASPIRECERTIFICATES001
+#pragma warning disable ASPIREMONGODB001
 
 namespace Aspire.Hosting.MongoDB.Tests;
 

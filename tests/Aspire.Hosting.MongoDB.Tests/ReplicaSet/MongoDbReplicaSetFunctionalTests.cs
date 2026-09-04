@@ -10,6 +10,8 @@ using MongoDB.Driver;
 using Polly;
 using Aspire.Hosting.ApplicationModel;
 
+#pragma warning disable ASPIREMONGODB001
+
 namespace Aspire.Hosting.MongoDB.Tests;
 
 public class MongoDbReplicaSetFunctionalTests(ITestOutputHelper testOutputHelper)

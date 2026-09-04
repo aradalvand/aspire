@@ -1,5 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
+using System.Diagnostics.CodeAnalysis;
+
+#pragma warning disable ASPIREMONGODB001
+
 namespace Aspire.Hosting.ApplicationModel;
 
 /// <summary>
@@ -9,6 +13,7 @@ namespace Aspire.Hosting.ApplicationModel;
 /// <remarks>
 /// This resource is a logical grouping of multiple <see cref="MongoDBServerResource"/> instances that are configured as members of the same replica set.
 /// </remarks>
+[Experimental("ASPIREMONGODB001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
 public sealed class MongoDBReplicaSetResource(
     string name,
     ParameterResource keyFile,
